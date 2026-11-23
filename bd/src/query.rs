@@ -7,7 +7,7 @@
 //!    70 every query word is a word of the title (last one may be a prefix)
 //!    60 every query word is a word of title or forms
 //!    50 same, allowing typos
-//!    40 every query word occurs in the definition text
+//!    40 every query word occurs in the definition text (+2 per query word that is a title word)
 //!    20+ some of the query words occur (only when nothing better exists)
 use crate::index::{fold_key, Index, Terms};
 use crate::text::tokens;
@@ -312,6 +312,33 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         }
     }
 
+    // C2. titles of two or more words that are a contiguous part of the query ("atrial fibrillation" for
+    // "atrial fibrillation treatment"), longer parts first.
+    if qt.len() > 1 && good(&best) < limit {
+        for len in (2..qt.len()).rev() {
+            let tier = T_FULL + 2 * len.min(4) as u64 + 1;
+            for w in qt.windows(len) {
+                let phrase = w.join(" ");
+                let mut i = ix.title_lower_bound(&phrase);
+                let mut scanned = 0;
+                while i < ix.n && scanned < PREFIX_SCAN_CAP {
+                    let doc = ix.sorted_doc(i);
+                    if fold_key(ix.doc(doc).title) != phrase {
+                        break;
+                    }
+                    put(
+                        ix,
+                        &mut best,
+                        doc,
+                        mk_key(tier, phrase.chars().count(), doc),
+                    );
+                    i += 1;
+                    scanned += 1;
+                }
+            }
+        }
+    }
+
     // D. words in the definition text.
     if best.len() < limit {
         let full = ix.full();
@@ -333,15 +360,20 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
             }
             for doc in acc.into_iter().take(CANDIDATE_CAP) {
                 if !best.contains_key(&doc) {
-                    let tn = fold_key(ix.doc(doc).title);
-                    put(ix, &mut best, doc, mk_key(T_FULL, tn.chars().count(), doc));
+                    let tt = tokens(ix.doc(doc).title);
+                    let mut uniq: Vec<&String> = qt.iter().filter(|q| tt.contains(q)).collect();
+                    uniq.sort();
+                    uniq.dedup();
+                    let named = uniq.len().min(4) as u64;
+                    let chars = tt.join(" ").chars().count();
+                    put(ix, &mut best, doc, mk_key(T_FULL + named * 2, chars, doc));
                 }
             }
         }
     }
 
-    // E. nothing at all: documents containing some of the words.
-    if best.is_empty() && qt.len() >= 2 {
+    // E. few results: documents containing some of the words.
+    if best.len() < limit && qt.len() >= 2 {
         let full = ix.full();
         let mut counts: HashMap<u32, u64> = HashMap::new();
         for (j, t) in qt.iter().enumerate() {
@@ -536,6 +568,41 @@ mod tests {
         let long = format!("{twelve} zzzzz yyyyy");
         assert_eq!(query_tokens(&long).len(), MAX_QUERY_WORDS);
         assert_eq!(titles(&ix, &long), vec!["be"]);
+    }
+
+    #[test]
+    fn phrase_in_definition_prefers_entries_named_by_the_query() {
+        let (_d, ix) = build(&[
+            ("go", "", "to run away quickly"),
+            ("cop", "", "a police officer who may run away"),
+            ("run", "", "to move fast; run away means flee"),
+            ("away", "", "at a distance"),
+        ]);
+        let t = titles(&ix, "run away");
+        assert_eq!(t[0], "run");
+        assert!(t.contains(&"go".to_string()));
+    }
+
+    #[test]
+    fn longest_title_part_of_the_query_comes_first() {
+        let (_d, ix) = build(&[
+            ("atrial fibrillation", "", "an irregular heartbeat"),
+            ("treatment", "", "medical care"),
+            ("fibrillation", "", "quivering"),
+            ("zz", "", "atrial fibrillation treatment is discussed here"),
+        ]);
+        let t = titles(&ix, "atrial fibrillation treatment");
+        assert_eq!(t[0], "atrial fibrillation");
+        assert!(t.contains(&"treatment".to_string()));
+    }
+
+    #[test]
+    fn repeated_query_words_count_once() {
+        let (_d, ix) = build(&[
+            ("day-to-day", "", "every day to be or not"),
+            ("be", "", "to be or not to be: exist"),
+        ]);
+        assert_eq!(titles(&ix, "to be or to be")[0], "be");
     }
 
     #[test]
