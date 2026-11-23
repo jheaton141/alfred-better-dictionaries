@@ -308,7 +308,7 @@ impl Index {
             let base = 16 + i * 16;
             let off = u64::from_le_bytes(mmap[base..base + 8].try_into().unwrap()) as usize;
             let len = u64::from_le_bytes(mmap[base + 8..base + 16].try_into().unwrap()) as usize;
-            if off + len > mmap.len() {
+            if off.checked_add(len).map_or(true, |e| e > mmap.len()) {
                 bail!("{path} is truncated");
             }
             *s = (off, len);

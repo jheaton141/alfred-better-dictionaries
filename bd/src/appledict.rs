@@ -12,7 +12,7 @@ fn int_at(d: &[u8], pos: usize) -> Result<i32> {
 /// Every definition (an `<d:entry ...>` XML string) in the file.
 pub fn definitions(path: &str) -> Result<Vec<String>> {
     let data = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-    let limit = 0x40 + int_at(&data, 0x40)? as i64 as usize;
+    let limit = 0x40usize.saturating_add(int_at(&data, 0x40)?.max(0) as usize);
     // Two header layouts: body at 0x60 or at 0x44.
     let mut pos = if (int_at(&data, 0x44)?, int_at(&data, 0x48)?) == (0, -1) {
         0x60
@@ -27,12 +27,12 @@ pub fn definitions(path: &str) -> Result<Vec<String>> {
             bail!("corrupt section at offset {pos}");
         }
         let compressed_size = compressed_size as usize;
-        let decompressed_size = int_at(&data, pos + 8)? as usize;
-        let start = pos + 12;
+        let decompressed_size = int_at(&data, pos + 8)?.max(0) as usize;
+        let start = pos.checked_add(12).context("corrupt section")?;
         let comp = data
-            .get(start..start + compressed_size)
+            .get(start..start.checked_add(compressed_size).unwrap_or(usize::MAX))
             .context("section runs past end of file")?;
-        let mut dec = Vec::with_capacity(decompressed_size);
+        let mut dec = Vec::with_capacity(decompressed_size.min(1 << 26));
         ZlibDecoder::new(comp).read_to_end(&mut dec)?;
         dec.truncate(decompressed_size);
         pos = start + compressed_size;
@@ -42,8 +42,8 @@ pub fn definitions(path: &str) -> Result<Vec<String>> {
         } else {
             let mut p = 0;
             while p + 4 <= dec.len() {
-                let n = int_at(&dec, p)? as usize;
-                let end = (p + 4 + n).min(dec.len());
+                let n = int_at(&dec, p)?.max(0) as usize;
+                let end = (p + 4).saturating_add(n).min(dec.len());
                 out.push(String::from_utf8_lossy(&dec[p + 4..end]).into_owned());
                 p = end;
             }

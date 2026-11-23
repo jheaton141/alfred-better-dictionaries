@@ -26,6 +26,9 @@ fn cache_path(data_dir: &str, id: &str, name: &str) -> String {
 /// The definition's HTML, from its gzip member in the pack.
 fn read_definition(data_dir: &str, id: &str, d: &DocView) -> Result<Vec<u8>> {
     let mut f = std::fs::File::open(format!("{data_dir}/{id}/defs.pack")).context("defs.pack")?;
+    if d.off.saturating_add(d.len) > f.metadata()?.len() {
+        anyhow::bail!("definition lies outside defs.pack");
+    }
     f.seek(SeekFrom::Start(d.off))?;
     let mut buf = vec![0u8; d.len as usize];
     f.read_exact(&mut buf)?;
@@ -42,7 +45,7 @@ fn materialize(data_dir: &str, id: &str, d: &DocView, html: &[u8]) -> Result<Str
         return Ok(path);
     }
     std::fs::create_dir_all(format!("{data_dir}/cache/{id}"))?;
-    let tmp = format!("{path}.tmp");
+    let tmp = format!("{path}.{}.tmp", std::process::id());
     {
         let mut o = std::fs::File::create(&tmp)?;
         o.write_all(b"<!DOCTYPE html><html lang=\"en\"><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/></head><body>")?;
@@ -72,6 +75,18 @@ fn message(title: &str, subtitle: &str) -> Value {
     json!({"items": [{"title": title, "subtitle": subtitle, "valid": false}]})
 }
 
+const DAMAGED: (&str, &str) = ("A search index is damaged", "It is being rebuilt: run lookup again in a moment");
+
+/// Run `f`, turning a panic (a corrupt index) into `None`.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+/// Delete a damaged index so the next lookup rebuilds it from the pack.
+fn discard_index(data_dir: &str, id: &str) {
+    let _ = std::fs::remove_file(index_path(data_dir, id));
+}
+
 /// `bd search <dict_id> <query>`
 pub fn search_dict(data_dir: &str, id: &str, q: &str) -> Result<Value> {
     let ix = match Index::open(&index_path(data_dir, id)) {
@@ -79,7 +94,11 @@ pub fn search_dict(data_dir: &str, id: &str, q: &str) -> Result<Value> {
         Err(_) => return Ok(message("This dictionary needs a one-time upgrade", "Run: lookup — it will upgrade in the background")),
     };
     let sel = Sel::new();
-    let items: Vec<Value> = query::search(&ix, q, LIMIT).iter().map(|h| item_json(&sel, data_dir, id, &ix.doc(h.doc), None)).collect();
+    let Some(hits) = guarded(|| query::search(&ix, q, LIMIT)) else {
+        discard_index(data_dir, id);
+        return Ok(message(DAMAGED.0, DAMAGED.1));
+    };
+    let items: Vec<Value> = hits.iter().filter_map(|h| guarded(|| item_json(&sel, data_dir, id, &ix.doc(h.doc), None))).collect();
     Ok(json!({ "items": items }))
 }
 
@@ -92,19 +111,32 @@ pub fn search_all(data_dir: &str, dicts: &[(String, String)], q: &str) -> Result
         }
     }
     let mut all: Vec<(usize, Hit)> = vec![];
-    for (i, (_, ix)) in opened.iter().enumerate() {
-        all.extend(query::search(ix, q, LIMIT).into_iter().map(|h| (i, h)));
+    let mut damaged = false;
+    for (i, (d, ix)) in opened.iter().enumerate() {
+        match guarded(|| query::search(ix, q, LIMIT)) {
+            Some(hits) => all.extend(hits.into_iter().map(|h| (i, h))),
+            None => {
+                discard_index(data_dir, &d.1);
+                damaged = true;
+            }
+        }
     }
     all.sort_by(|a, b| b.1.key.cmp(&a.1.key)); // stable: dictionary order breaks ties
     all.truncate(LIMIT);
     let sel = Sel::new();
-    let items: Vec<Value> = all
+    let mut items: Vec<Value> = all
         .iter()
-        .map(|(i, h)| {
+        .filter_map(|(i, h)| {
             let ((title, id), ix) = (opened[*i].0, &opened[*i].1);
-            item_json(&sel, data_dir, id, &ix.doc(h.doc), Some(title))
+            guarded(|| item_json(&sel, data_dir, id, &ix.doc(h.doc), Some(title)))
         })
         .collect();
+    if damaged && items.is_empty() {
+        return Ok(message(DAMAGED.0, DAMAGED.1));
+    }
+    if damaged {
+        items.push(json!({"title": DAMAGED.0, "subtitle": DAMAGED.1, "valid": false}));
+    }
     Ok(json!({ "items": items }))
 }
 
@@ -122,13 +154,33 @@ fn pid_alive(pid: &str) -> bool {
 }
 
 pub fn migration_running(data_dir: &str) -> bool {
-    std::fs::read_to_string(format!("{data_dir}/migrate.lock")).map(|p| pid_alive(p.trim())).unwrap_or(false)
+    let lock = format!("{data_dir}/migrate.lock");
+    let Ok(pid) = std::fs::read_to_string(&lock) else { return false };
+    if pid.trim().is_empty() {
+        // just claimed, the child's pid is not written yet
+        return std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e.as_secs() < 10);
+    }
+    pid_alive(pid.trim())
 }
 
 /// Start `bd migrate` detached from this (short-lived) script-filter process.
 fn spawn_migration(data_dir: &str) {
     use std::os::unix::process::CommandExt;
     let Ok(exe) = std::env::current_exe() else { return };
+    // Take the lock atomically so keystroke-by-keystroke lookups start only one migration.
+    let lock = format!("{data_dir}/migrate.lock");
+    let claim = || std::fs::OpenOptions::new().write(true).create_new(true).open(&lock);
+    let mut f = match claim() {
+        Ok(f) => f,
+        Err(_) if migration_running(data_dir) => return,
+        Err(_) => {
+            let _ = std::fs::remove_file(&lock); // stale: its process is gone
+            match claim() {
+                Ok(f) => f,
+                Err(_) => return,
+            }
+        }
+    };
     let log = std::fs::OpenOptions::new().create(true).append(true).open(format!("{data_dir}/import.log"));
     let mut c = Command::new(exe);
     c.args(["migrate", data_dir]).stdin(Stdio::null()).process_group(0);
@@ -140,7 +192,11 @@ fn spawn_migration(data_dir: &str) {
             c.stdout(Stdio::null()).stderr(Stdio::null());
         }
     }
-    let _ = c.spawn();
+    if let Ok(child) = c.spawn() {
+        let _ = write!(f, "{}", child.id());
+    } else {
+        let _ = std::fs::remove_file(&lock);
+    }
 }
 
 /// The single `lookup` script filter:
@@ -170,9 +226,7 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
         if let Ok(why) = std::fs::read_to_string(format!("{data_dir}/migrate.failed")) {
             return Ok(message("Upgrading the dictionaries failed", &format!("See import.log in the workflow data folder. {}", why.trim())));
         }
-        if !migration_running(data_dir) {
-            spawn_migration(data_dir);
-        }
+        spawn_migration(data_dir);
         let mut v = message("Upgrading your dictionaries (one time)…", "Searching is available again when it finishes; progress is in the notifications");
         v["rerun"] = json!(2);
         return Ok(v);

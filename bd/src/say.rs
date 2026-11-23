@@ -102,7 +102,9 @@ fn curl_json(target: &str, body: &Value) -> Result<Value> {
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
-pub fn say_ipa(ipa: &str, voice: &str, out: &str, play: bool) -> Result<()> {
+pub fn say_ipa(ipa: &str, voice: &str, out: Option<&str>, play: bool) -> Result<()> {
+    let tmp_out = std::env::temp_dir().join(format!("bd-ipa-{}.mp3", std::process::id())).to_string_lossy().into_owned();
+    let out = out.unwrap_or(&tmp_out);
     let id = curl_json("GetId", &json!({"IdentityPoolId": POOL_ID}))?;
     let id = id["IdentityId"].as_str().context("no IdentityId")?;
     let c = curl_json("GetCredentialsForIdentity", &json!({"IdentityId": id}))?;
@@ -112,7 +114,8 @@ pub fn say_ipa(ipa: &str, voice: &str, out: &str, play: bool) -> Result<()> {
         c["SecretKey"].as_str().context("no SecretKey")?,
         c["SessionToken"].as_str().context("no SessionToken")?,
     );
-    let ssml = format!("<phoneme alphabet='ipa' ph='{ipa}'></phoneme>");
+    let esc = ipa.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\'', "&apos;").replace('"', "&quot;");
+    let ssml = format!("<speak><phoneme alphabet='ipa' ph='{esc}'></phoneme></speak>");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
     let url = presign(ak, sk, tok, &ssml, voice, now);
     let st = Command::new("/usr/bin/curl")
@@ -124,7 +127,9 @@ pub fn say_ipa(ipa: &str, voice: &str, out: &str, play: bool) -> Result<()> {
         bail!("downloading audio failed");
     }
     if play {
-        Command::new("afplay").arg(out).status().context("afplay")?;
+        let r = Command::new("afplay").arg(out).status().context("afplay");
+        let _ = std::fs::remove_file(out);
+        r?;
     }
     Ok(())
 }

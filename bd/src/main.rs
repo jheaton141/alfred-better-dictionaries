@@ -90,7 +90,8 @@ fn all_dict_paths() -> Vec<String> {
 fn read_imported(data_dir: &str) -> Value {
     std::fs::read_to_string(format!("{data_dir}/imported.json"))
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(|v| v["items"].is_array())
         .unwrap_or_else(|| json!({"items": []}))
 }
 
@@ -287,9 +288,15 @@ fn cmd_import(dict_path: &str, data_dir: &str) -> Result<()> {
     let n = pack_and_index(data_dir, &id, words)?;
 
     let mut imported = read_imported(data_dir);
+    if imported["items"].as_array().is_some_and(|a| a.iter().any(|i| i["arg"] == id.as_str())) {
+        ui::notify(data_dir, &format!("Re-imported {name}"), &format!("{n} entries (already in the workflow)"));
+        return Ok(());
+    }
     imported["items"].as_array_mut().unwrap().push(json!({"title": name, "arg": id}));
     create_workflow_objects(&wf_dir, &name, &id)?;
-    std::fs::write(format!("{data_dir}/imported.json"), serde_json::to_string_pretty(&imported)?)?;
+    let tmp = format!("{data_dir}/imported.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&imported)?)?;
+    std::fs::rename(&tmp, format!("{data_dir}/imported.json"))?;
     ui::notify(data_dir, &format!("Imported {name}"), &format!("{n} entries"));
     Ok(())
 }
@@ -342,7 +349,7 @@ fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
 /// layout or from the Meilisearch-era pack (no re-import from Apple's files).
 fn cmd_migrate(data_dir: &str, keep_backup: bool) -> Result<()> {
     let _ = std::fs::remove_file(format!("{data_dir}/migrate.failed"));
-    std::fs::write(format!("{data_dir}/migrate.lock"), std::process::id().to_string())?;
+    std::fs::write(format!("{data_dir}/migrate.lock"), std::process::id().to_string())?; // child already holds it when spawned by lookup
     let r = migrate_inner(data_dir, keep_backup);
     let _ = std::fs::remove_file(format!("{data_dir}/migrate.lock"));
     match &r {
@@ -407,6 +414,13 @@ fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
 
 fn cmd_factory_reset(data_dir: &str) -> Result<()> {
     let wf = workflow_dir();
+    let home = std::env::var("HOME").unwrap_or_default();
+    if data_dir.len() < 10 || data_dir == home || !data_dir.contains("Workflow Data") && std::env::var("alfred_workflow_data").is_err() {
+        bail!("refusing to delete suspicious data folder {data_dir:?}");
+    }
+    if !Path::new(&format!("{wf}/info.plist.orig")).exists() {
+        bail!("{wf}/info.plist.orig is missing; nothing was deleted");
+    }
     std::fs::remove_dir_all(data_dir)?;
     std::fs::copy(format!("{wf}/info.plist"), format!("{wf}/info.plist.bkp"))?;
     std::fs::copy(format!("{wf}/info.plist.orig"), format!("{wf}/info.plist"))?;
@@ -482,7 +496,7 @@ fn run() -> Result<()> {
         "say-ipa" => {
             let ipa = args.get(1).context("usage: bd say-ipa <ipa> [--voice Salli]")?;
             let voice = args.iter().position(|a| a == "--voice").and_then(|i| args.get(i + 1)).map(String::as_str).unwrap_or("Salli");
-            say::say_ipa(ipa, voice, "/tmp/ipa.mp3", !args.iter().any(|a| a == "--no-play"))
+            say::say_ipa(ipa, voice, args.iter().position(|a| a == "--out").and_then(|i| args.get(i + 1)).map(String::as_str), !args.iter().any(|a| a == "--no-play"))
         }
         "version" => {
             println!("bd {}", env!("CARGO_PKG_VERSION"));

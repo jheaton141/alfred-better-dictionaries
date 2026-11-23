@@ -1,25 +1,66 @@
 name: Build and Release
 
-on: push
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Build the Alfred workflow (Apple silicon)
-    runs-on: macos-14
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Get workflow version
-        run: echo "WF_VERSION=$(plutil -extract version raw -o - info.plist)" >> $GITHUB_ENV
-      - name: Test
-        run: cd bd && cargo test --release
-      - name: Build workflow
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bd
+      - name: Unit tests
+        working-directory: bd
+        run: cargo test --release --locked
+
+  build:
+    name: Build workflow (Apple silicon)
+    needs: test
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bd
+      - name: Build
         run: ./build.sh
+      - name: Smoke test the packaged workflow
+        run: |
+          set -euo pipefail
+          WF=$(ls ./*.alfredworkflow)
+          rm -rf /tmp/wf && mkdir /tmp/wf && unzip -q "$WF" -d /tmp/wf
+          file /tmp/wf/bd | grep -q arm64
+          /tmp/wf/bd version
+          plutil -lint /tmp/wf/info.plist
+          test -d /tmp/wf/AlfredExtraPane.app
+          for f in lookup.sh search.sh sayipa.sh setup.sh; do bash -n /tmp/wf/$f; done
+          # no Python/uv left in the package
+          ! ls /tmp/wf | grep -E 'uv|pyapp|\.py$'
+          # empty-data lookup prints valid Alfred JSON
+          mkdir -p /tmp/wfdata
+          alfred_workflow_data=/tmp/wfdata BD_WORKFLOW_DIR=/tmp/wf /tmp/wf/bd lookup "" | python3 -c 'import json,sys; assert json.load(sys.stdin)["items"]'
       - uses: actions/upload-artifact@v4
         with:
           name: workflow
           path: "*.alfredworkflow"
       - name: Release
-        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$WF_VERSION" ./*.alfredworkflow --title "$WF_VERSION" || gh release upload "$WF_VERSION" ./*.alfredworkflow --clobber
+        run: |
+          V=$(plutil -extract version raw -o - info.plist)
+          gh release create "$V" ./*.alfredworkflow --title "$V" --target "$GITHUB_SHA" \
+            || gh release upload "$V" ./*.alfredworkflow --clobber
