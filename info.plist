@@ -25,7 +25,17 @@
 		<array>
 			<dict>
 				<key>destinationuid</key>
-				<string>31F0971B-EEAC-47C1-8132-C34467C22DD3</string>
+				<string>4304F5B0-5EE4-4190-8C7A-3D3BF945DBD9</string>
+				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>07542750-62D5-4658-B992-090595513ACF</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
@@ -293,9 +303,9 @@
 			<key>config</key>
 			<dict>
 				<key>alfredfiltersresults</key>
-				<true/>
+				<false/>
 				<key>alfredfiltersresultsmatchmode</key>
-				<integer>2</integer>
+				<integer>0</integer>
 				<key>argumenttreatemptyqueryasnil</key>
 				<true/>
 				<key>argumenttrimmode</key>
@@ -317,13 +327,13 @@
 				<key>runningsubtext</key>
 				<string>loading...</string>
 				<key>script</key>
-				<string>cat "$alfred_workflow_data/imported.json"</string>
+				<string>./lookup.sh "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>
 				<string></string>
 				<key>subtext</key>
-				<string>keyword: 'lookup'</string>
+				<string>keyword: 'lookup' — pick a dictionary, then type a word</string>
 				<key>title</key>
 				<string>Look a word up in a BetterDictionary</string>
 				<key>type</key>
@@ -736,9 +746,9 @@ Subsequent searches should be snappy
 			<key>note</key>
 			<string>Open definition in browser</string>
 			<key>xpos</key>
-			<real>1265</real>
+			<real>1265.0</real>
 			<key>ypos</key>
-			<real>195</real>
+			<real>195.0</real>
 		</dict>
 		<key>144E72F0-97B5-44B6-BFB2-163409B9019B</key>
 		<dict>
@@ -747,67 +757,67 @@ Subsequent searches should be snappy
 			<key>note</key>
 			<string>dummy fallback search</string>
 			<key>xpos</key>
-			<real>810</real>
+			<real>810.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 		<key>18D17FBB-4E03-4E94-9802-19E31E8C516C</key>
 		<dict>
 			<key>xpos</key>
-			<real>30</real>
+			<real>30.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 		<key>20D38440-F936-46C0-B86E-DBD7028AFDB7</key>
 		<dict>
 			<key>xpos</key>
-			<real>30</real>
+			<real>30.0</real>
 			<key>ypos</key>
-			<real>610</real>
+			<real>610.0</real>
 		</dict>
 		<key>29F7F338-2B96-43C0-A429-19810757504C</key>
 		<dict>
 			<key>xpos</key>
-			<real>185</real>
+			<real>185.0</real>
 			<key>ypos</key>
-			<real>390</real>
+			<real>390.0</real>
 		</dict>
 		<key>31F0971B-EEAC-47C1-8132-C34467C22DD3</key>
 		<dict>
 			<key>xpos</key>
-			<real>150</real>
+			<real>150.0</real>
 			<key>ypos</key>
-			<real>35</real>
+			<real>35.0</real>
 		</dict>
 		<key>402C89C1-C3F3-4786-9683-19ACD884E06E</key>
 		<dict>
 			<key>xpos</key>
-			<real>185</real>
+			<real>185.0</real>
 			<key>ypos</key>
-			<real>280</real>
+			<real>280.0</real>
 		</dict>
 		<key>4304F5B0-5EE4-4190-8C7A-3D3BF945DBD9</key>
 		<dict>
 			<key>note</key>
 			<string>Play pronunciation audio</string>
 			<key>xpos</key>
-			<real>1265</real>
+			<real>1265.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 		<key>5F2298EA-894F-4017-BD87-6120B0E7FFF6</key>
 		<dict>
 			<key>xpos</key>
-			<real>30</real>
+			<real>30.0</real>
 			<key>ypos</key>
-			<real>500</real>
+			<real>500.0</real>
 		</dict>
 		<key>6E224CAA-82D7-45F9-9037-58E8D3C2F854</key>
 		<dict>
 			<key>xpos</key>
-			<real>330</real>
+			<real>330.0</real>
 			<key>ypos</key>
-			<real>390</real>
+			<real>390.0</real>
 		</dict>
 		<key>761778DB-3FD1-4498-9E85-CDE066A12538</key>
 		<dict>
@@ -816,37 +826,37 @@ Subsequent searches should be snappy
 			<key>note</key>
 			<string>dummy hotkey</string>
 			<key>xpos</key>
-			<real>650</real>
+			<real>650.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 		<key>7D522442-A9A5-4103-AC3E-5373DB98AC9F</key>
 		<dict>
 			<key>xpos</key>
-			<real>185</real>
+			<real>185.0</real>
 			<key>ypos</key>
-			<real>610</real>
+			<real>610.0</real>
 		</dict>
 		<key>96B75A90-A8B0-4B61-85E7-91F01F0835E3</key>
 		<dict>
 			<key>xpos</key>
-			<real>185</real>
+			<real>185.0</real>
 			<key>ypos</key>
-			<real>500</real>
+			<real>500.0</real>
 		</dict>
 		<key>B1C33335-D970-4488-8953-913D6C7E3D6F</key>
 		<dict>
 			<key>xpos</key>
-			<real>30</real>
+			<real>30.0</real>
 			<key>ypos</key>
-			<real>280</real>
+			<real>280.0</real>
 		</dict>
 		<key>C6850BD6-BCFE-456F-AF77-59A4F8F5D50A</key>
 		<dict>
 			<key>xpos</key>
-			<real>30</real>
+			<real>30.0</real>
 			<key>ypos</key>
-			<real>390</real>
+			<real>390.0</real>
 		</dict>
 		<key>CE509E43-D9A7-4B99-AFA6-6FEEB4D26442</key>
 		<dict>
@@ -855,16 +865,16 @@ Subsequent searches should be snappy
 			<key>note</key>
 			<string>dummy script filter</string>
 			<key>xpos</key>
-			<real>970</real>
+			<real>970.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 		<key>EA71FA7B-F359-4998-9657-DA10E2644E4F</key>
 		<dict>
 			<key>xpos</key>
-			<real>185</real>
+			<real>185.0</real>
 			<key>ypos</key>
-			<real>500</real>
+			<real>500.0</real>
 		</dict>
 		<key>EAFA3DE4-7416-4CD3-94A2-91E6A70F554B</key>
 		<dict>
@@ -873,18 +883,18 @@ Subsequent searches should be snappy
 			<key>note</key>
 			<string>dummy junction</string>
 			<key>xpos</key>
-			<real>550</real>
+			<real>550.0</real>
 			<key>ypos</key>
-			<real>40</real>
+			<real>40.0</real>
 		</dict>
 		<key>F7170828-96FA-4241-A50B-974496E7A1FC</key>
 		<dict>
 			<key>note</key>
 			<string>router</string>
 			<key>xpos</key>
-			<real>210</real>
+			<real>210.0</real>
 			<key>ypos</key>
-			<real>15</real>
+			<real>15.0</real>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>
@@ -892,7 +902,7 @@ Subsequent searches should be snappy
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.2.20</string>
+	<string>0.3.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/mr-pennyworth/alfred-better-dictionaries</string>
 </dict>

@@ -18,6 +18,8 @@ WF_FILES = [
     "icon.png",
     "info.plist",
     "jq",
+    "lib.sh",
+    "lookup.sh",
     "pyapp",
     "uv",
     "README.md",

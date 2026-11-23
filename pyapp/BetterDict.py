@@ -24,6 +24,13 @@ from ProgressBar import IndefiniteProgressBar
 from ProgressBar import run_parallely_with_progress_bar
 from WorkflowGraph import WorkflowGraph
 
+# Index-size knobs. The search index is the biggest consumer of disk and the
+# main driver of cold-start latency, so keep what it stores to what search
+# actually needs: Alfred shows a single subtitle line, and matches deep in a
+# very long entry add little relevance but a lot of index.
+SUBTITLE_MAX_CHARS = 300
+FULLTEXT_MAX_CHARS = 4000
+
 HOME = os.path.expanduser("~")
 SEARCH_IP = os.environ.get("SEARCH_IP", "127.0.0.1")
 SEARCH_PORT = os.environ.get("SEARCH_PORT", "6789")
@@ -93,15 +100,12 @@ def create_html_file(word, definitions, html_dir):
     for filename, definition in filename_defn_pairs(word, definitions):
         with open(f"{html_dir}/{filename}", "wb") as f:
             f.write(
-                f"""<!DOCTYPE html>
-        <html lang="en">
-          <head>
-            <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-          </head>
-          <body> {definition} </body>
-        </html>""".encode(
-                    "utf-8"
-                )
+                (
+                    '<!DOCTYPE html><html lang="en"><head>'
+                    '<meta http-equiv="Content-Type" '
+                    'content="text/html; charset=utf-8"/></head>'
+                    f"<body>{definition}</body></html>"
+                ).encode("utf-8")
             )
 
 
@@ -163,6 +167,8 @@ def make_alfred_item(word, filename, definition, html_dir):
     snippet_div = soup.find(attrs={"d:def": "1"})
     if snippet_div is not None:
         snippet = snippet_div.get_text()
+    snippet = snippet[:SUBTITLE_MAX_CHARS]
+    fulltext = fulltext[:FULLTEXT_MAX_CHARS]
 
     # forms of a word typically include:
     # plural forms of a noun: (mouse, mice)
@@ -179,7 +185,7 @@ def make_alfred_item(word, filename, definition, html_dir):
         "title": word,
         "id": filename.split(".")[0],
         "forms": forms,
-        "subtitle": forms + snippet,
+        "subtitle": (forms + snippet)[:SUBTITLE_MAX_CHARS],
         "fulltext": fulltext,
         "quicklookurl": html_path,
     }
@@ -377,11 +383,12 @@ def create_index(dict_id, db_path):
     task_info = db.create_index(dict_id)
     db.wait_for_task(task_info.task_uid, timeout_in_ms=10000)
     index = db.get_index(dict_id)
+    # "subtitle" is just a prefix/excerpt of "fulltext"; indexing both
+    # doubles the index for no relevance gain.
     index.update_searchable_attributes(
         [
             "title",
             "forms",
-            "subtitle",
             "fulltext",
         ]
     )
@@ -394,6 +401,10 @@ def create_index(dict_id, db_path):
             "proximity",
         ]
     )
+    # Meilisearch >= 1.6: only record word positions per attribute rather than
+    # per word pair. Considerably smaller index and faster indexing; the
+    # trade-off is slightly coarser proximity ranking.
+    index.update_settings({"proximityPrecision": "byAttribute"})
     index.update_displayed_attributes(
         [
             # everything except id, forms, and fulltext

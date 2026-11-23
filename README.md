@@ -64,7 +64,9 @@ any hotkeys/keywords, follow this:
  1. Type `lookup` into Alfred. You'll see a list of all dictionaries
     imported into BetterDict.
     ![](images/lookup-imported.png)
- 2. Select the dictionary to search, and type the search query.
+ 2. Select the dictionary (or press `⇥` to autocomplete it), and keep
+    typing the search query in the same Alfred window, e.g.
+    `lookup Oxford arm`.
 
 
 ### Notes and Warnings
@@ -77,7 +79,13 @@ any hotkeys/keywords, follow this:
 
  - After each mac restart, for the first time when you run
    the workflow, expect a comparatively slower search.
-   Subsequent searches should be instant.
+   Subsequent searches should be instant. The search server is started
+   (and its index pre-warmed) the moment you type `lookup` or use any
+   dictionary keyword, so the first real search is usually already warm.
+
+ - Works with Alfred 5 and 6. Dictionaries imported with an older version
+   keep working, but re-import them (`.dict-factory-reset`) to get the
+   smaller, faster index described below.
 
  - This workflow takes a LOT of space on disk. Take a look at the comparison:
    ```markdown
