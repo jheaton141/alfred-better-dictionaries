@@ -367,7 +367,10 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
             for doc in acc.into_iter().take(CANDIDATE_CAP) {
                 if !best.contains_key(&doc) {
                     let tt = tokens(ix.doc(doc).title);
-                    let mut uniq: Vec<&String> = qt.iter().filter(|q| tt.contains(q)).collect();
+                    let mut uniq: Vec<&String> = qt
+                        .iter()
+                        .filter(|q| tt.contains(q) && !STOPWORDS.contains(&q.as_str()))
+                        .collect();
                     uniq.sort();
                     uniq.dedup();
                     let named = uniq.len().min(4) as u64;
@@ -410,15 +413,16 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
                 ((ix.n as f64 + 1.0) / (df as f64 + 1.0)).ln() + 0.1
             };
             total += 2.0 * weight;
-            let mut docs: Vec<(u32, (bool, bool))> = seen.into_iter().collect();
-            docs.sort_unstable_by_key(|d| d.0);
-            docs.truncate(CANDIDATE_CAP);
-            for (d, (in_title, exact)) in docs {
+            for (d, (in_title, exact)) in seen {
                 let part = if exact { 1.0 } else { 0.4 };
                 *scores.entry(d).or_insert(0.0) += weight * part * if in_title { 2.0 } else { 1.0 };
             }
         }
-        for (doc, sc) in scores {
+        // keep the best-scoring candidates; ties go to the lower doc id so output is stable
+        let mut ranked: Vec<(u32, f64)> = scores.into_iter().collect();
+        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        ranked.truncate(CANDIDATE_CAP);
+        for (doc, sc) in ranked {
             let tn = fold_key(ix.doc(doc).title);
             let tier = T_RELAXED + (19.0 * sc / total).floor().clamp(0.0, 19.0) as u64;
             put(ix, &mut best, doc, mk_key(tier, tn.chars().count(), doc));
@@ -620,6 +624,15 @@ mod tests {
         let t = titles(&ix, "atrial fibrillation treatment");
         assert_eq!(t[0], "atrial fibrillation");
         assert!(t.contains(&"treatment".to_string()));
+    }
+
+    #[test]
+    fn function_words_in_a_title_earn_no_bonus_in_the_definition_stage() {
+        let (_d, ix) = build(&[
+            ("out of date", "", "no longer run out of use"),
+            ("run", "", "to run out of time"),
+        ]);
+        assert_eq!(titles(&ix, "run out of")[0], "run");
     }
 
     #[test]

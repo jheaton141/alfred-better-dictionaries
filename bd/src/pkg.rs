@@ -249,7 +249,10 @@ pub fn upgrade(
     for name in ["info.plist", "info.plist.orig"] {
         let p = format!("{dest}/{name}");
         if Path::new(&p).exists() {
-            std::fs::copy(&p, format!("{p}.pre-{ver}"))?;
+            let bak = format!("{p}.pre-{ver}");
+            if !Path::new(&bak).exists() {
+                std::fs::copy(&p, &bak)?;
+            }
             patch_plist(&p, &new)?;
             println!("  patched {name} (backup: {name}.pre-{ver})");
         }
