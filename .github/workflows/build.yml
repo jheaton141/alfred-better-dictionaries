@@ -24,6 +24,16 @@ jobs:
         working-directory: bd
         run: cargo test --release --locked
 
+  deny:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: bd/Cargo.toml
+          arguments: --locked
+
   build:
     name: Build workflow (Apple silicon)
     needs: test

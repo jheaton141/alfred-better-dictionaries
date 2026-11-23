@@ -404,7 +404,7 @@ fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
     for n in names {
         let text = String::from_utf8_lossy(&std::fs::read(format!("{dir}/{n}"))?).into_owned();
         if let Some(m) = body_re.captures(&text) {
-            let defn = m[1].trim().to_string();
+            let defn = m[1].to_string();
             if title_re.is_match(&defn) {
                 defs.push(defn);
             }
@@ -595,5 +595,25 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_html_dir_preserves_body_whitespace() {
+        let dir = std::env::temp_dir().join(format!("bd-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = "\n<d:entry d:title=\"word\"><span>sub</span>\n</d:entry>\n";
+        std::fs::write(
+            dir.join("a.html"),
+            format!("<html><body>{body}</body></html>"),
+        )
+        .unwrap();
+        let words = read_legacy_html_dir(dir.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(words, vec![("word".to_string(), vec![body.to_string()])]);
     }
 }
