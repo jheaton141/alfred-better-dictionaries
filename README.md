@@ -73,7 +73,8 @@ any hotkeys/keywords, follow this:
  - Everything is done by `bd`, a single native Rust binary (source in
    `bd/`): importing, the search index and the lookups themselves. No
    Python, no virtual environment, no search server, no first-run download.
-   (`uv` is only still bundled for the optional IPA audio script.)
+   The workflow is just `bd`, a few tiny shell scripts and the extra pane.
+   Apple Silicon only.
 
  - Importing a dictionary takes a minute or two on Apple Silicon.
 
@@ -89,19 +90,19 @@ any hotkeys/keywords, follow this:
    HTML that Alfred previews is generated on demand for the few results
    shown and cached under `cache/` (pruned after a week of disuse).
 
-### Upgrading without re-importing
+### Building and upgrading without re-importing
+You need only Rust (`rustup`). `./build.sh` makes
+`Better Dictionaries.arm64.alfredworkflow`.
+
 Re-importing a newer `.alfredworkflow` over an installed one loses the
 per-dictionary keywords/hotkeys. To upgrade in place instead, quit Alfred
-Preferences and run `python3 upgrade_in_place.py` from a checkout of this
-repo. Your imported dictionaries, keywords and hotkeys are kept, and no
-re-import from the macOS dictionary files is needed.
+Preferences and run `./upgrade.sh` from a checkout of this repo (pass the
+workflow folder if it isn't found automatically). Your imported
+dictionaries, keywords and hotkeys are kept, and no re-import from the
+macOS dictionary files is needed.
 
-The upgrade needs the `bd` binary (Apple Silicon). Get it from the CI build:
-
-    curl -L https://github.com/jheaton141/alfred-better-dictionaries/releases/download/bd-latest/bd-arm64 -o bd-arm64
-    python3 upgrade_in_place.py --bd bd-arm64
-
-It builds the new search index from your existing dictionaries (from the
-pack, or from the oldest HTML-folder layout), then deletes the old
-Meilisearch server and database (`--keep-backup` keeps the database; use
-`--no-migrate` to let the first `lookup` do the conversion in the background).
+It builds `bd`, patches the installed workflow's scripts, builds the new
+search index from your existing dictionaries, then deletes the old
+Meilisearch server and database and any leftover Python/`uv` files
+(`--keep-backup` keeps the database; `--no-migrate` lets the first `lookup`
+do the conversion in the background).

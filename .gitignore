@@ -10,7 +10,6 @@ alfred-dict-server
 dist
 build
 jq
-uv
 wfbuild
 AlfredExtraPane.app
 bd/target

@@ -3,7 +3,9 @@ mod graph;
 mod index;
 mod item;
 mod lookup;
+mod pkg;
 mod query;
+mod say;
 mod text;
 mod ui;
 
@@ -460,11 +462,33 @@ fn run() -> Result<()> {
             Ok(())
         }
         "factory-reset" => cmd_factory_reset(&data_arg(1)?),
+        "package" => {
+            pkg::package(args.get(1).context("usage: bd package <repo> <out_dir>")?, args.get(2).context("usage: bd package <repo> <out_dir>")?)
+        }
+        "upgrade" => {
+            let repo = args.get(1).context("usage: bd upgrade <repo> [workflow_dir] [--no-migrate] [--keep-backup]")?;
+            let no_migrate = args.iter().any(|a| a == "--no-migrate");
+            let dest = args.get(2).map(String::as_str).filter(|a| !a.starts_with("--"));
+            pkg::upgrade(repo, dest, |dest, _| {
+                if no_migrate {
+                    return Ok(());
+                }
+                let data = default_data_dir(dest)?;
+                std::fs::create_dir_all(&data)?;
+                println!("Building the search index for your imported dictionaries (a minute or two)...");
+                cmd_migrate(&data, keep_backup)
+            })
+        }
+        "say-ipa" => {
+            let ipa = args.get(1).context("usage: bd say-ipa <ipa> [--voice Salli]")?;
+            let voice = args.iter().position(|a| a == "--voice").and_then(|i| args.get(i + 1)).map(String::as_str).unwrap_or("Salli");
+            say::say_ipa(ipa, voice, "/tmp/ipa.mp3", !args.iter().any(|a| a == "--no-play"))
+        }
         "version" => {
             println!("bd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => bail!("usage: bd <import|search|lookup|list-unimported|migrate|factory-reset|version> ..."),
+        _ => bail!("usage: bd <import|search|lookup|list-unimported|migrate|factory-reset|package|upgrade|say-ipa|version> ..."),
     }
 }
 

@@ -1,6 +1,2 @@
 #!/bin/bash
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec "$SCRIPT_DIR/uv" run --with boto3 "$SCRIPT_DIR/sayipa.py" "$@"
+cd "$(dirname "$0")" && exec ./bd say-ipa "$@"

@@ -1,11 +1,13 @@
 [package]
 name = "bd"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "BetterDict: importer, search index and lookup (replaces the Python pyapp and Meilisearch)"
 
 [dependencies]
 anyhow = "1"
+hmac = "0.12"
+sha2 = "0.10"
 flate2 = "1"
 plist = "1"
 rayon = "1"

@@ -7,7 +7,6 @@ fi
 
 set -uo pipefail
 
-chmod +x ./uv
 chmod +x ./bd
 
 function deQuarantine {
@@ -18,7 +17,6 @@ function deQuarantine {
 }
 
 deQuarantine ./AlfredExtraPane.app
-deQuarantine ./uv
 deQuarantine ./bd
 
 mkdir -p "${alfred_workflow_data:-/dev/null}" 2> /dev/null || true
