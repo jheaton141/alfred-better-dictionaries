@@ -25,6 +25,12 @@ pub const T_RELAXED: u64 = 20;
 const PREFIX_SCAN_CAP: usize = 4000;
 const TERM_EXPANSION_CAP: usize = 300;
 const CANDIDATE_CAP: usize = 5000;
+/// Function words: they are not in the definition index, so their frequency is unknown.
+const STOPWORDS: &[&str] = &[
+    "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "from", "with", "and", "or", "is",
+    "are", "was", "be", "do", "does", "did", "it", "this", "that", "what", "why", "how", "where",
+    "when", "who", "which", "i", "you", "my", "your", "as", "not", "no",
+];
 /// Query words beyond this are ignored (a pasted paragraph must not take seconds).
 const MAX_QUERY_WORDS: usize = 12;
 
@@ -379,26 +385,36 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         let mut scores: HashMap<u32, f64> = HashMap::new();
         let mut total = 0.0;
         for (j, t) in qt.iter().enumerate() {
-            // (doc, in_title, exact): the last word may match as a prefix, which counts less
+            // doc -> (in_title, exact); the last word may also match as a prefix, which counts less
             let mut seen: HashMap<u32, (bool, bool)> = HashMap::new();
-            let exact_pass = if j == last {
-                vec![false, true]
-            } else {
-                vec![false]
-            };
-            for prefix in exact_pass.into_iter().rev() {
-                for (d, in_title) in head_docs(&head, t, prefix) {
-                    seen.insert(d, (in_title, !prefix));
+            if j == last {
+                for (d, in_title) in head_docs(&head, t, true) {
+                    seen.insert(d, (in_title, false));
+                }
+                for d in full_docs(&full, t, true) {
+                    seen.entry(d).or_insert((false, false));
                 }
             }
-            for d in full_docs(&full, t, j == last) {
-                seen.entry(d).or_insert((false, false));
+            for (d, in_title) in head_docs(&head, t, false) {
+                seen.insert(d, (in_title, true));
             }
-            let exact_n = seen.values().filter(|v| v.1 || j != last).count().max(1);
-            let weight = ((ix.n as f64 + 1.0) / (exact_n as f64 + 1.0)).ln() + 0.1;
+            for d in full_docs(&full, t, false) {
+                seen.entry(d)
+                    .and_modify(|v| v.1 = true)
+                    .or_insert((false, true));
+            }
+            let df = seen.values().filter(|v| v.1).count().max(1);
+            let weight = if STOPWORDS.contains(&t.as_str()) {
+                0.15
+            } else {
+                ((ix.n as f64 + 1.0) / (df as f64 + 1.0)).ln() + 0.1
+            };
             total += 2.0 * weight;
-            for (d, (in_title, exact)) in seen.into_iter().take(CANDIDATE_CAP) {
-                let part = if exact || j != last { 1.0 } else { 0.4 };
+            let mut docs: Vec<(u32, (bool, bool))> = seen.into_iter().collect();
+            docs.sort_unstable_by_key(|d| d.0);
+            docs.truncate(CANDIDATE_CAP);
+            for (d, (in_title, exact)) in docs {
+                let part = if exact { 1.0 } else { 0.4 };
                 *scores.entry(d).or_insert(0.0) += weight * part * if in_title { 2.0 } else { 1.0 };
             }
         }
@@ -649,6 +665,27 @@ mod tests {
             t.iter().position(|x| x == "tipsy"),
         );
         assert!(a.is_some() && (b.is_none() || a < b));
+    }
+
+    #[test]
+    fn function_words_do_not_outweigh_content_words() {
+        let mut docs: Vec<(String, String, String)> = (0..300)
+            .map(|i| match i % 60 {
+                0 => (format!("son of a gun {i}"), String::new(), "a rogue".into()),
+                _ => (
+                    format!("filler{i}"),
+                    String::new(),
+                    format!("unrelated text {i}"),
+                ),
+            })
+            .collect();
+        docs.push(("tachycardia".into(), String::new(), "fast heartbeat".into()));
+        let refs: Vec<(&str, &str, &str)> = docs
+            .iter()
+            .map(|d| (d.0.as_str(), d.1.as_str(), d.2.as_str()))
+            .collect();
+        let (_d, ix) = build(&refs);
+        assert_eq!(titles(&ix, "a tachycardia of")[0], "tachycardia");
     }
 
     #[test]
