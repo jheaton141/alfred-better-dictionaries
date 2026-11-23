@@ -336,6 +336,13 @@ fn cmd_import(dict_path: &str, data_dir: &str, objects: bool) -> Result<()> {
     let words = group_by_word(appledict::definitions(&body)?);
     let n = pack_and_index(data_dir, &id, words)?;
 
+    // Serialise the read-modify-write of imported.json (setup and .dict-import can overlap).
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(format!("{data_dir}/imported.lock"))?;
+    lock.lock()?; // released when `lock` drops
     let mut imported = read_imported(data_dir);
     if imported["items"]
         .as_array()
