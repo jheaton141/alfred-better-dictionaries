@@ -61,6 +61,10 @@ def find_installed():
     return None
 
 
+BD_ARG = None
+OLD_PY = '"$alfred_workflow_data/.venv/bin/python" pyapp/BetterDict.py'
+
+
 def patch_plist(path, new_version):
     with open(path, "rb") as f:
         wf = plistlib.load(f)
@@ -85,7 +89,10 @@ def patch_plist(path, new_version):
     }
     wf["connections"][lookup["uid"]] = [conn(ipa, CMD), conn(opener, 0)]
     for o in wf["objects"]:
-        sc = o["config"].get("script", "") if isinstance(o.get("config"), dict) else ""
+        c = o.get("config")
+        if isinstance(c, dict) and OLD_PY in c.get("script", ""):
+            c["script"] = c["script"].replace(OLD_PY, "./bd")
+        sc = c.get("script", "") if isinstance(c, dict) else ""
         if "cocoaDialog" in sc and "confirm()" in sc:
             new = open(f"{HERE}/info.plist", "rb")
             ref = next(x for x in plistlib.load(new)["objects"] if x["uid"] == o["uid"])
@@ -96,7 +103,13 @@ def patch_plist(path, new_version):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    global BD_ARG
+    argv = sys.argv[1:]
+    if "--bd" in argv:
+        i = argv.index("--bd")
+        BD_ARG = argv[i + 1]
+        del argv[i:i + 2]
+    args = [a for a in argv if not a.startswith("--")]
     migrate = "--migrate" in sys.argv
     keep_backup = "--keep-backup" in sys.argv
     dest = args[0] if args else find_installed()
@@ -116,7 +129,21 @@ def main():
     for name in SCRIPTS:
         shutil.copy(f"{HERE}/{name}", f"{dest}/{name}")
         os.chmod(f"{dest}/{name}", os.stat(f"{dest}/{name}").st_mode | stat.S_IXUSR)
-    shutil.copytree(f"{HERE}/pyapp", f"{dest}/pyapp", dirs_exist_ok=True)
+    bd_src = BD_ARG or next(
+        (p for p in (f"{HERE}/bd/target/release/bd", f"{HERE}/bd-arm64", f"{HERE}/bd")
+         if os.path.isfile(p)), None)
+    if not bd_src:
+        sys.exit("The Rust importer binary 'bd' is missing. Download it (see README: "
+                 "'Getting bd') or pass --bd /path/to/bd.")
+    shutil.copy(bd_src, f"{dest}/bd")
+    os.chmod(f"{dest}/bd", 0o755)
+    try:
+        subprocess.call(["xattr", "-d", "com.apple.quarantine", f"{dest}/bd"],
+                        stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+    shutil.copy(f"{HERE}/setup.sh", f"{dest}/setup.sh")
+    print(f"  installed bd from {bd_src}")
     subprocess.call(["pkill", "-f", "alfred-dict-server"])  # restart w/ new flags
     print("Done. Existing dictionaries, keywords and hotkeys are untouched.")
 
@@ -124,13 +151,9 @@ def main():
         data = os.path.expanduser(
             f"~/Library/Application Support/Alfred/Workflow Data/{BUNDLE_ID}"
         )
-        py = f"{data}/.venv/bin/python"
-        if not os.path.exists(py):
-            sys.exit("No BetterDict Python environment yet; open Alfred and "
-                     "run `lookup` once, then re-run with --migrate.")
-        cmd = [py, "pyapp/BetterDict.py", "migrate", data]
+        cmd = [f"{dest}/bd", "migrate", data]
         if keep_backup:
-            cmd.insert(3, "--keep-backup")
+            cmd.insert(2, "--keep-backup")
         print("Migrating imported dictionaries (this can take a while)...")
         sys.exit(subprocess.call(cmd, cwd=dest))
 

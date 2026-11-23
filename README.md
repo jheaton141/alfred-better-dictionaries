@@ -70,9 +70,9 @@ any hotkeys/keywords, follow this:
 
 
 ### Notes and Warnings
- - On first run after importing/upgrading the workflow, BetterDict bootstraps
-   a local Python environment in Alfred Workflow Data. This can take a bit
-   longer than normal startup.
+ - Importing and migrating are done by `bd`, a single native Rust binary
+   (source in `bd/`). No Python, no virtual environment, no first-run
+   download. (`uv` is only still bundled for the optional IPA audio script.)
 
  - Importing a dictionary could take as much as 30 minutes
    on old machines or if there's significant CPU activity from other apps.
@@ -100,11 +100,16 @@ per-dictionary keywords/hotkeys. To upgrade in place instead, quit Alfred
 Preferences and run `python3 upgrade_in_place.py` from a checkout of this
 repo. Your imported dictionaries, keywords, hotkeys and indexes are kept.
 
+The upgrade needs the `bd` binary (Apple Silicon). Get it from the CI build:
+
+    curl -L https://github.com/jheaton141/alfred-better-dictionaries/releases/download/bd-latest/bd-arm64 -o bd-arm64
+    python3 upgrade_in_place.py --bd bd-arm64
+
 Add `--migrate` to also convert dictionaries imported with an older version
 to the compact storage layout, without re-importing from the macOS
 dictionary files:
 
-    python3 upgrade_in_place.py --migrate
+    python3 upgrade_in_place.py --bd bd-arm64 --migrate
 
 Search is unavailable while it runs. The new index is built next to the old
 one and the old data is only deleted once every dictionary has been rebuilt

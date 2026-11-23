@@ -17,6 +17,13 @@ UV_VERSION="0.10.9"
 UV_INTEL="$UV_RELEASE_URL/download/$UV_VERSION/uv-x86_64-apple-darwin.tar.gz"
 UV_APPLE="$UV_RELEASE_URL/download/$UV_VERSION/uv-aarch64-apple-darwin.tar.gz"
 
+# Build the Rust importer (bd). arm64 runners build natively.
+if [ "$ARCH" = "x86_64" ]; then BD_TARGET=x86_64-apple-darwin; else BD_TARGET=aarch64-apple-darwin; fi
+rustup target add "$BD_TARGET" || true
+(cd bd && cargo build --release --target "$BD_TARGET")
+cp "bd/target/$BD_TARGET/release/bd" ./bd
+chmod +x bd
+
 if [ "$ARCH" = "x86_64" ]; then
   curl -L $MS_INTEL -o alfred-dict-server
   curl -L $JQ_INTEL -o jq

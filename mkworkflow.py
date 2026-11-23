@@ -12,6 +12,7 @@ BUILD_DIR = "wfbuild"
 WF_FILES = [
     "AlfredExtraPane.app",
     "alfred-dict-server",
+    "bd",
     "dict-entry.css",
     "extra-pane-config.json",
     "icon.png",
@@ -19,7 +20,6 @@ WF_FILES = [
     "jq",
     "lib.sh",
     "lookup.sh",
-    "pyapp",
     "uv",
     "README.md",
     "sayipa.py",
