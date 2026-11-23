@@ -30,7 +30,11 @@ function prewarm_indexes() {
 # Start the server (if not already running) and return immediately.
 # Safe to call on every keystroke.
 function ensure_server_started() {
-  if pgrep -x alfred-dict-server > /dev/null; then
+  # Health check first; failing that, a pidfile (a server that is still
+  # booting is not healthy yet, but must not be started a second time).
+  local pidfile="$alfred_workflow_data/server.pid"
+  if is_server_healthy; then return 0; fi
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2> /dev/null; then
     return 0
   fi
   mkdir -p "$alfred_workflow_data"
@@ -40,6 +44,7 @@ function ensure_server_started() {
     --http-addr "$IP:$PORT" \
     --no-analytics \
     < /dev/null > "$alfred_workflow_data/db.log" 2>&1 &
+  echo $! > "$pidfile"
   prune_cache &
   # Warm the caches in the background, once the server is accepting requests.
   (

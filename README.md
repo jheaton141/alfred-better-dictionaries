@@ -93,3 +93,9 @@ any hotkeys/keywords, follow this:
    a week of disuse). Together with the slimmer search index this is much
    smaller than the old one-HTML-file-per-definition layout. Re-import
    existing dictionaries (`.dict-factory-reset`) to benefit.
+
+### Upgrading without re-importing
+Re-importing a newer `.alfredworkflow` over an installed one loses the
+per-dictionary keywords/hotkeys. To upgrade in place instead, quit Alfred
+Preferences and run `python3 upgrade_in_place.py` from a checkout of this
+repo. Your imported dictionaries, keywords, hotkeys and indexes are kept.
