@@ -6,7 +6,7 @@
 //!    80 title starts with the query
 //!    70 every query word is a word of the title (last one may be a prefix)
 //!    60 every query word is a word of title or forms
-//!    50 same, allowing typos
+//!    50 same, allowing typos (fewer edits first)
 //!    40 every query word occurs in the definition text (+2 per query word that is a title word)
 //!    20+ some of the query words occur (only when nothing better exists)
 use crate::index::{fold_key, Index, Terms};
@@ -47,6 +47,45 @@ pub fn tier_of(key: u64) -> u64 {
 
 fn mk_key(tier: u64, title_chars: usize, doc: u32) -> u64 {
     (tier << 48) | ((0xFFFF - title_chars.min(0xFFFF)) as u64) << 32 | (u32::MAX - doc) as u64
+}
+
+/// Typo-tier key: fewer edits first (bits 44-47), then shorter title (bits 32-43), then lower doc id.
+fn mk_typo_key(dist: usize, title_chars: usize, doc: u32) -> u64 {
+    (T_TYPO << 48)
+        | ((15 - dist.min(15)) as u64) << 44
+        | ((0xFFF - title_chars.min(0xFFF)) as u64) << 32
+        | (u32::MAX - doc) as u64
+}
+
+/// Total edits between the query words and their closest title/form words (last word may be a prefix).
+fn typo_distance(ix: &Index, doc: u32, qt: &[String]) -> usize {
+    let d = ix.doc(doc);
+    let mut words = tokens(d.title);
+    words.extend(tokens(d.forms));
+    let last = qt.len() - 1;
+    qt.iter()
+        .enumerate()
+        .map(|(j, q)| {
+            let k = typos_allowed(q);
+            let qc: Vec<char> = q.chars().collect();
+            words
+                .iter()
+                .filter_map(|w| {
+                    let wc: Vec<char> = w.chars().collect();
+                    let full = lev_le(&qc, &wc, k);
+                    let pre = (j == last)
+                        .then(|| {
+                            (qc.len().saturating_sub(k)..=(qc.len() + k).min(wc.len()))
+                                .filter_map(|n| lev_le(&qc, &wc[..n], k))
+                                .min()
+                        })
+                        .flatten();
+                    full.into_iter().chain(pre).min()
+                })
+                .min()
+                .unwrap_or(k + 1)
+        })
+        .sum()
 }
 
 /// Record a candidate; untitled entries (front matter) are never results.
@@ -312,7 +351,13 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
             for (doc, _) in cand.into_iter().take(CANDIDATE_CAP) {
                 if !best.contains_key(&doc) {
                     let tn = fold_key(ix.doc(doc).title);
-                    put(ix, &mut best, doc, mk_key(T_TYPO, tn.chars().count(), doc));
+                    let dist = typo_distance(ix, doc, &qt);
+                    put(
+                        ix,
+                        &mut best,
+                        doc,
+                        mk_typo_key(dist, tn.chars().count(), doc),
+                    );
                 }
             }
         }
@@ -563,6 +608,24 @@ mod tests {
         let (_d, ix) = sample();
         assert_eq!(titles(&ix, "extrordinary")[0], "extraordinary");
         assert_eq!(titles(&ix, "zebrra")[0], "zebra");
+    }
+
+    #[test]
+    fn closer_typo_match_beats_shorter_title() {
+        let (_d, ix) = build(&[("serenity", "", "calm"), ("serendipity", "", "luck")]);
+        assert_eq!(titles(&ix, "serendipty"), ["serendipity", "serenity"]);
+    }
+
+    #[test]
+    fn missing_letter_typo_counts_one_edit_against_longer_words() {
+        let (_d, ix) = build(&[("big government", "", "x"), ("governmental", "", "x")]);
+        assert_eq!(titles(&ix, "goverment"), ["governmental", "big government"]);
+    }
+
+    #[test]
+    fn exact_and_prefix_beat_any_typo_match() {
+        let (_d, ix) = build(&[("zebre", "", "x"), ("zebrat", "", "x"), ("zebra", "", "x")]);
+        assert_eq!(titles(&ix, "zebra"), ["zebra", "zebrat", "zebre"]);
     }
 
     #[test]

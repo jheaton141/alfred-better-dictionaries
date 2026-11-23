@@ -33,7 +33,7 @@ Better search and live previews for built-in macOS dictionaries.
 
 ### Rebuilt in Rust
 This fork replaces the original Python + Meilisearch backend with `bd`, a
-single native Rust binary (v0.8.2, source in `bd/`). The workflow's look and
+single native Rust binary (v0.8.3, source in `bd/`). The workflow's look and
 features are unchanged; what changed is everything underneath.
 
 Measured head-to-head against the original
@@ -60,7 +60,7 @@ is 929 MB down to 103 MB, and the 480 MB of HTML becomes the 79 MB pack, about
 6× smaller, with nothing pre-rendered.
 
 **Ranking.** Results are tiered: exact title, inflected form (`ran` finds
-*run*), title prefix, title words, typo-tolerant match, then the words of the
+*run*), title prefix, title words, typo-tolerant match (fewer edits first), then the words of the
 definition. For multi-word queries, entries whose title is the query or part
 of it come first, and the fallback weights rare words above common ones and
 ignores function words (`run away` returns *run*, `kick the bucket` returns
