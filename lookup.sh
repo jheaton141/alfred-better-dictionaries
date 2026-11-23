@@ -24,7 +24,10 @@ fi
 # is ready by the time they have picked a dictionary and typed a word.
 ensure_server_started
 
-# One jq pass decides the mode.
+# One jq pass decides the mode:
+#   "lookup Oxford word" -> that dictionary only (title prefix + space)
+#   "lookup word"        -> ALL dictionaries, merged by relevance
+#   "lookup"             -> hint + dictionary list (for scoping to one)
 decision=$($JQ -c --arg q "$query" '
   .items as $dicts
   | ($q | ascii_downcase) as $lq
@@ -36,20 +39,29 @@ decision=$($JQ -c --arg q "$query" '
        q: ($q[($hit.title | length) + 1:] | ltrimstr(" "))}
     elif ($dicts | length) == 1 and ($q | length) > 0 then
       {mode: "search", id: $dicts[0].arg, title: $dicts[0].title, q: $q}
+    elif ($q | length) > 0 then
+      {mode: "all", q: $q}
     else
       {mode: "list",
-       items: [ $dicts[]
-                | select(. as $d | ($lq == "") or (($d.title | ascii_downcase) | contains($lq)))
-                | {title: .title,
-                   subtitle: "Search \(.title)",
+       items: ([{title: "Search all dictionaries…",
+                 subtitle: "Just type a word, or pick one dictionary below",
+                 valid: false}]
+               + [ $dicts[] | {title: .title,
+                   subtitle: "Search only \(.title)",
                    autocomplete: (.title + " "),
-                   valid: false} ]}
+                   valid: false} ])}
     end' "$imported")
 
 mode=$($JQ -r '.mode' <<< "$decision")
 
 if [ "$mode" = "list" ]; then
   $JQ -c '{items: .items}' <<< "$decision"
+  exit 0
+fi
+
+if [ "$mode" = "all" ]; then
+  open -g ./AlfredExtraPane.app
+  search_all "$($JQ -r '.q' <<< "$decision")"
   exit 0
 fi
 

@@ -113,3 +113,39 @@ function search_dict() {
   materialize_hits "$dict_id" "$out"
   echo "$out" | $JQ -c '{items: (.hits | map(del(.off, .len)))}'
 }
+
+# search_all <query>  -> one merged result list across every imported dictionary
+# (Meilisearch multi-search, merged by ranking score). Each subtitle is
+# prefixed with the dictionary it came from.
+function search_all() {
+  local query="$1" body out
+  local imported="$alfred_workflow_data/imported.json"
+  local url="$BASE_URL/multi-search"
+  body=$($JQ -n --arg q "$query" --slurpfile d "$imported" \
+    '{queries: [ $d[0].items[] | {indexUid: .arg, q: $q, limit: 9, showRankingScore: true} ]}')
+
+  ensure_server_started
+  out=$(curl -sf --max-time 10 "$url" \
+        -H 'Content-Type: application/json' --data "$body") \
+    || { wait_for_server && out=$(curl -sf --max-time 10 "$url" \
+        -H 'Content-Type: application/json' --data "$body"); }
+
+  if [ -z "$out" ]; then
+    echo '{"items":[{"title":"Search server is starting…","subtitle":"Keep typing; results appear in a moment","valid":false}],"rerun":0.5}'
+    return 0
+  fi
+
+  local merged
+  merged=$($JQ -c --slurpfile d "$imported" '
+    ([$d[0].items[] | {key: .arg, value: .title}] | from_entries) as $names
+    | [ .results[] | .indexUid as $i | .hits[] | . + {_idx: $i} ]
+    | sort_by(-(._rankingScore // 0)) | .[:9]
+    | map(.subtitle = "[\($names[._idx])] " + (.subtitle // ""))' <<< "$out")
+
+  # Materialize HTML for the merged hits, one dictionary at a time.
+  local idx
+  for idx in $($JQ -r '.[]._idx' <<< "$merged" | sort -u); do
+    materialize_hits "$idx" "$($JQ -c --arg i "$idx" '{hits: map(select(._idx == $i))}' <<< "$merged")"
+  done
+  $JQ -c '{items: map(del(.off, .len, ._idx, ._rankingScore))}' <<< "$merged"
+}
