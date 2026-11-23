@@ -333,7 +333,7 @@
 				<key>scriptfile</key>
 				<string></string>
 				<key>subtext</key>
-				<string>keyword: 'lookup' — type a word (dictionary and thesaurus are set up automatically)</string>
+				<string>lookup word — or lookup d: word (dictionary only), lookup t: word (thesaurus only)</string>
 				<key>title</key>
 				<string>Look a word up in a BetterDictionary</string>
 				<key>type</key>
@@ -897,7 +897,7 @@ Subsequent searches should be snappy
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.7.1</string>
+	<string>0.8.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/mr-pennyworth/alfred-better-dictionaries</string>
 </dict>

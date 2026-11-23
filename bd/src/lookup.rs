@@ -315,14 +315,65 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
         return Ok(v);
     }
 
-    if query.trim().is_empty() {
+    let (scope, word) = parse_scope(query);
+    let chosen: Vec<(String, String)> = dicts
+        .iter()
+        .filter(|d| scope.admits(&d.1))
+        .cloned()
+        .collect();
+    if word.is_empty() {
         return Ok(message(
             "Look up a word",
-            "Type a word to search the dictionary and thesaurus",
+            "Type a word, or d: word (dictionary only) / t: word (thesaurus only)",
         ));
     }
     open_extra_pane(wf_dir);
-    search_all(data_dir, &dicts, query)
+    if chosen.is_empty() {
+        return Ok(message(
+            "Nothing imported for that scope",
+            "Try without the d: / t: prefix",
+        ));
+    }
+    search_all(data_dir, &chosen, word)
+}
+
+/// Which dictionaries a lookup searches.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Scope {
+    All,
+    Dictionary,
+    Thesaurus,
+}
+
+impl Scope {
+    fn admits(self, id: &str) -> bool {
+        let thesaurus = id.ends_with("-OAWT") || id.ends_with("-OTE");
+        match self {
+            Scope::All => true,
+            Scope::Dictionary => !thesaurus,
+            Scope::Thesaurus => thesaurus,
+        }
+    }
+}
+
+/// Split a leading `d:`/`dict:` (dictionary only) or `t:`/`thes:` (thesaurus only) off the query.
+fn parse_scope(query: &str) -> (Scope, &str) {
+    let q = query.trim();
+    for (prefix, scope) in [
+        ("dict:", Scope::Dictionary),
+        ("d:", Scope::Dictionary),
+        ("thes:", Scope::Thesaurus),
+        ("t:", Scope::Thesaurus),
+    ] {
+        if let Some(rest) = q
+            .get(..prefix.len())
+            .filter(|h| h.eq_ignore_ascii_case(prefix))
+        {
+            let _ = rest;
+            return (scope, q[prefix.len()..].trim());
+        }
+    }
+    (Scope::All, q)
 }
 
 /// True if a setup job was started within the last minute (covers a crash that left no marker).
@@ -383,4 +434,31 @@ pub fn prune_cache(data_dir: &str) {
         }
     }
     let _ = std::fs::write(&marker, "");
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn prefixes_pick_the_scope() {
+        assert_eq!(parse_scope("run"), (Scope::All, "run"));
+        assert_eq!(parse_scope("d: run"), (Scope::Dictionary, "run"));
+        assert_eq!(parse_scope("T:happy"), (Scope::Thesaurus, "happy"));
+        assert_eq!(
+            parse_scope("thes: kick the bucket"),
+            (Scope::Thesaurus, "kick the bucket")
+        );
+        assert_eq!(parse_scope("d:"), (Scope::Dictionary, ""));
+        assert_eq!(parse_scope("döner"), (Scope::All, "döner"));
+        assert_eq!(parse_scope("t"), (Scope::All, "t"));
+    }
+
+    #[test]
+    fn thesauri_are_told_apart_from_dictionaries() {
+        let (nd, ot) = ("com-apple-dictionary-NOAD", "com-apple-dictionary-OTE");
+        assert!(Scope::Dictionary.admits(nd) && !Scope::Dictionary.admits(ot));
+        assert!(Scope::Thesaurus.admits(ot) && !Scope::Thesaurus.admits(nd));
+        assert!(Scope::All.admits(nd) && Scope::All.admits(ot));
+    }
 }
