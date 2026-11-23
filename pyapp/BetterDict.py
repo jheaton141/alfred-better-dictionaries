@@ -575,7 +575,23 @@ def list_unimported(workflow_data_dir: str):
     default=DEFAULT_WORKFLOW_DATA_DIR,
 )
 def import_(dict_path: str, workflow_data_dir: str):
-    import_dict(dict_path, workflow_data_dir)
+    # Alfred swallows script errors, so record progress and any crash where
+    # the user can find it: <workflow data>/import.log
+    import traceback
+
+    log_path = f"{workflow_data_dir}/import.log"
+    with open(log_path, "a") as log:
+        log.write(
+            f"\n=== {time.ctime()} import {dict_path}\n"
+            f"python {sys.version.split()[0]}  workflow_dir={WORKFLOW_DIR}\n"
+        )
+        log.flush()
+        try:
+            import_dict(dict_path, workflow_data_dir)
+            log.write("OK: import finished\n")
+        except BaseException:
+            log.write(traceback.format_exc())
+            raise
 
 
 @main.command()
