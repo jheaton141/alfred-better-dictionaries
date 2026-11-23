@@ -447,12 +447,7 @@
 				<integer>102</integer>
 				<key>script</key>
 				<string>function confirm() {
-./cocoadialog.app/Contents/MacOS/cocoaDialog \
-  yesno-msgbox \
-  --no-cancel \
-  --title 'Factory Reset BetterDict' \
-  --label 'This will delete the HTML previews and search index. You can re-import the dictionaries later.' \
-  --alert 'Do you really want to delete all imported dictionaries?'
+  osascript -e 'display alert "Do you really want to delete all imported dictionaries?" message "This will delete the HTML previews and search index. You can re-import the dictionaries later." as critical buttons {"Cancel", "Delete"} default button "Cancel" cancel button "Cancel"' &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo 1
 }
 
 if [ "$(confirm)" = "1" ]; then

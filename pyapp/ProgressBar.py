@@ -10,29 +10,13 @@ from multiprocess import Process, Queue
 import alfred
 
 WORKFLOW_DIR = alfred.get_workflow_dir()
-CD_PATH = f"{WORKFLOW_DIR}/cocoaDialog.app/Contents/MacOS/cocoaDialog"
-
-
-def _launch_cocoadialog(cmd):
-    """Start the progress window. The bundled cocoaDialog is an Intel-only
-    binary, so on an Apple Silicon Mac without Rosetta it cannot launch.
-    Return None instead of crashing the whole import in that case."""
-    try:
-        proc = Popen(cmd, stdin=PIPE, stdout=DEVNULL, encoding="utf-8")
-    except OSError as e:
-        print(f"progress window unavailable ({e}); using notifications",
-              file=sys.stderr)
-        return None
-    time.sleep(0.2)
-    if proc.poll() is not None:  # died immediately
-        return None
-    return proc
 
 
 def _notify(title, message):
-    """Fallback progress reporting: a macOS notification plus a status file."""
-    msg = message.replace('"', "'")[:120]
-    ttl = title.replace('"', "'")
+    """Report progress with a native macOS notification (osascript, works on
+    Apple Silicon without Rosetta) plus a status file the user can `cat`."""
+    msg = message.replace("\\", "").replace('"', "'")[:120]
+    ttl = title.replace("\\", "").replace('"', "'")
     try:
         Popen(
             ["osascript", "-e",
@@ -49,82 +33,45 @@ def _notify(title, message):
 
 
 class ProgressBar:
+    """Notification every 10%; no external helper app needed."""
 
     def __init__(self, title="Progress", message="", percent=0.01):
-        cmd = [
-            CD_PATH,
-            "progressbar",
-            "--title",
-            title,
-            "--text",
-            message,
-            "--percent",
-            str(percent),
-        ]
         self.title = title
-        self.proc = _launch_cocoadialog(cmd)
-        self.message = message
         self.start_time = time.time()
-        self.last_notified_decile = -1
-        if self.proc is None:
-            _notify(title, "started")
+        self.last_decile = -1
+        _notify(title, "started")
 
     def update(self, percent, message):
-        elapsed_seconds = time.time() - self.start_time
-        estimated_total_seconds = elapsed_seconds * 100 / percent
-        estimated_remaining_seconds = estimated_total_seconds - elapsed_seconds
-        rs = int(estimated_remaining_seconds) % 60
-        rm = int(estimated_remaining_seconds) // 60
-        eta_n_message = f"[ETA {rm:02d}:{rs:02d}] {message}"
-        if self.proc is None:
-            decile = int(percent) // 10
-            if decile > self.last_notified_decile:
-                self.last_notified_decile = decile
-                _notify(self.title, f"{int(percent)}%  {eta_n_message}")
+        decile = int(percent) // 10
+        if decile <= self.last_decile:
             return
-        try:
-            self.proc.stdin.write(f"{int(percent)} {eta_n_message}\n")
-            self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError):
-            self.proc = None  # window was closed; carry on silently
+        self.last_decile = decile
+        elapsed = time.time() - self.start_time
+        remaining = int(elapsed * 100 / max(percent, 0.01) - elapsed)
+        _notify(self.title,
+                f"{int(percent)}%  [ETA {remaining // 60:02d}:{remaining % 60:02d}] {message}")
 
     def finish(self):
-        if self.proc is not None:
-            self.proc.kill()
+        _notify(self.title, "done")
 
 
 class IndefiniteProgressBar:
-
     def __init__(self, title="Progress", message=""):
-        cmd = [
-            CD_PATH,
-            "progressbar",
-            "--title",
-            title,
-            "--text",
-            message,
-            "--indeterminate",
-        ]
-        self.proc = _launch_cocoadialog(cmd)
-        self.message = message
+        self.title = title
         self.start_time = time.time()
+        self.last_notified = 0.0
+        _notify(title, message or "working…")
 
     def update(self, message):
-        if self.proc is None:
+        now = time.time()
+        if now - self.last_notified < 30:
             return
-        elapsed_seconds = time.time() - self.start_time
-        es = int(elapsed_seconds) % 60
-        em = int(elapsed_seconds) // 60
-        time_n_message = f"[Elapsed {em:02d}:{es:02d}] {message}"
-        try:
-            self.proc.stdin.write(f"0 {time_n_message}\n")
-            self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError):
-            self.proc = None
+        self.last_notified = now
+        e = int(now - self.start_time)
+        _notify(self.title, f"[Elapsed {e // 60:02d}:{e % 60:02d}] {message}")
 
     def finish(self):
-        if self.proc is not None:
-            self.proc.kill()
+        _notify(self.title, "done")
 
 
 class NoOpAcc:

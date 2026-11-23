@@ -20,7 +20,6 @@ function deQuarantine {
 
 deQuarantine ./AlfredExtraPane.app
 deQuarantine ./alfred-dict-server
-deQuarantine ./cocoaDialog.app
 deQuarantine ./jq
 deQuarantine ./uv
 

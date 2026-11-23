@@ -84,6 +84,12 @@ def patch_plist(path, new_version):
         "modifiersubtext": "", "vitoclose": False,
     }
     wf["connections"][lookup["uid"]] = [conn(ipa, CMD), conn(opener, 0)]
+    for o in wf["objects"]:
+        sc = o["config"].get("script", "") if isinstance(o.get("config"), dict) else ""
+        if "cocoaDialog" in sc and "confirm()" in sc:
+            new = open(f"{HERE}/info.plist", "rb")
+            ref = next(x for x in plistlib.load(new)["objects"] if x["uid"] == o["uid"])
+            o["config"]["script"] = ref["config"]["script"]
     wf["version"] = new_version
     with open(path, "wb") as f:
         plistlib.dump(wf, f)

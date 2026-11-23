@@ -12,7 +12,6 @@ BUILD_DIR = "wfbuild"
 WF_FILES = [
     "AlfredExtraPane.app",
     "alfred-dict-server",
-    "cocoaDialog.app",
     "dict-entry.css",
     "extra-pane-config.json",
     "icon.png",
