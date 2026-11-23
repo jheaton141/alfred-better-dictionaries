@@ -372,30 +372,40 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         }
     }
 
-    // E. few results: documents containing some of the words.
+    // E. few results: documents containing some of the words; rare words and title
+    // hits count more, so "atrial fibrillation treatment" favours "atrial" and "fibrillation".
     if best.len() < limit && qt.len() >= 2 {
         let full = ix.full();
-        let mut counts: HashMap<u32, u64> = HashMap::new();
+        let mut scores: HashMap<u32, f64> = HashMap::new();
+        let mut total = 0.0;
         for (j, t) in qt.iter().enumerate() {
-            let mut docs: Vec<u32> = head_docs(&head, t, j == last)
-                .into_iter()
-                .map(|x| x.0)
-                .collect();
-            docs.extend(full_docs(&full, t, j == last));
-            docs.sort_unstable();
-            docs.dedup();
-            for d in docs.into_iter().take(CANDIDATE_CAP) {
-                *counts.entry(d).or_insert(0) += 1;
+            // (doc, in_title, exact): the last word may match as a prefix, which counts less
+            let mut seen: HashMap<u32, (bool, bool)> = HashMap::new();
+            let exact_pass = if j == last {
+                vec![false, true]
+            } else {
+                vec![false]
+            };
+            for prefix in exact_pass.into_iter().rev() {
+                for (d, in_title) in head_docs(&head, t, prefix) {
+                    seen.insert(d, (in_title, !prefix));
+                }
+            }
+            for d in full_docs(&full, t, j == last) {
+                seen.entry(d).or_insert((false, false));
+            }
+            let exact_n = seen.values().filter(|v| v.1 || j != last).count().max(1);
+            let weight = ((ix.n as f64 + 1.0) / (exact_n as f64 + 1.0)).ln() + 0.1;
+            total += 2.0 * weight;
+            for (d, (in_title, exact)) in seen.into_iter().take(CANDIDATE_CAP) {
+                let part = if exact || j != last { 1.0 } else { 0.4 };
+                *scores.entry(d).or_insert(0.0) += weight * part * if in_title { 2.0 } else { 1.0 };
             }
         }
-        for (doc, c) in counts {
+        for (doc, sc) in scores {
             let tn = fold_key(ix.doc(doc).title);
-            put(
-                ix,
-                &mut best,
-                doc,
-                mk_key(T_RELAXED + c, tn.chars().count(), doc),
-            );
+            let tier = T_RELAXED + (19.0 * sc / total).floor().clamp(0.0, 19.0) as u64;
+            put(ix, &mut best, doc, mk_key(tier, tn.chars().count(), doc));
         }
     }
 
@@ -603,6 +613,42 @@ mod tests {
             ("be", "", "to be or not to be: exist"),
         ]);
         assert_eq!(titles(&ix, "to be or to be")[0], "be");
+    }
+
+    #[test]
+    fn fallback_favours_rare_words_and_exact_over_prefix() {
+        let mut docs: Vec<(String, String, String)> = (0..300)
+            .map(|i| match i % 15 {
+                0 => (
+                    format!("medical c{i}"),
+                    String::new(),
+                    "medical treatment".into(),
+                ),
+                _ => (
+                    format!("filler{i}"),
+                    String::new(),
+                    format!("unrelated text {i}"),
+                ),
+            })
+            .collect();
+        docs.push(("tachycardia".into(), String::new(), "fast heartbeat".into()));
+        docs.push(("tipsy".into(), String::new(), "a bit drunk".into()));
+        docs.push(("tip".into(), "tips".into(), "a small gift".into()));
+        let refs: Vec<(&str, &str, &str)> = docs
+            .iter()
+            .map(|d| (d.0.as_str(), d.1.as_str(), d.2.as_str()))
+            .collect();
+        let (_d, ix) = build(&refs);
+        assert_eq!(
+            titles(&ix, "tachycardia medical treatment")[0],
+            "tachycardia"
+        );
+        let t = titles(&ix, "dog gift tips");
+        let (a, b) = (
+            t.iter().position(|x| x == "tip"),
+            t.iter().position(|x| x == "tipsy"),
+        );
+        assert!(a.is_some() && (b.is_none() || a < b));
     }
 
     #[test]
