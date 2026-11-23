@@ -40,6 +40,7 @@ function ensure_server_started() {
     --http-addr "$IP:$PORT" \
     --no-analytics \
     < /dev/null > "$alfred_workflow_data/db.log" 2>&1 &
+  prune_cache &
   # Warm the caches in the background, once the server is accepting requests.
   (
     for _ in $(seq 1 200); do
@@ -61,6 +62,33 @@ function wait_for_server() {
   return 1
 }
 
+# materialize_hits <dict_id> <search-response-json>
+# Definitions live in one gzip-member-per-entry pack file. Alfred (quicklook,
+# the extra pane, "open") needs a real .html file, so write the handful of
+# hits it is about to show -- only if not already cached.
+function materialize_hits() {
+  local dict_id="$1" json="$2"
+  local pack="$alfred_workflow_data/$dict_id/defs.pack"
+  [ -f "$pack" ] || return 0
+  local path off len
+  while IFS=$'\t' read -r path off len; do
+    [ -f "$path" ] && continue
+    mkdir -p "${path%/*}"
+    {
+      printf '%s' '<!DOCTYPE html><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/></head><body>'
+      tail -c +$((off + 1)) "$pack" | head -c "$len" | gzip -dc
+      printf '%s' '</body></html>'
+    } > "$path.tmp" && mv "$path.tmp" "$path"
+  done < <($JQ -r '.hits[] | select(.off != null) | [.arg, .off, .len] | @tsv' <<< "$json")
+}
+
+# Drop cached HTML not touched for a week (it is regenerated on demand).
+function prune_cache() {
+  [ -d "$alfred_workflow_data/cache" ] &&
+    find "$alfred_workflow_data/cache" -type f -mtime +7 -delete 2> /dev/null
+  return 0
+}
+
 # search_dict <dict_id> <query>  -> prints Alfred script-filter JSON
 function search_dict() {
   local dict_id="$1" query="$2" body out
@@ -77,5 +105,6 @@ function search_dict() {
     echo '{"items":[{"title":"Search server is starting…","subtitle":"Keep typing; results appear in a moment","valid":false}],"rerun":0.5}'
     return 0
   fi
-  echo "$out" | $JQ -c '{items: .hits}'
+  materialize_hits "$dict_id" "$out"
+  echo "$out" | $JQ -c '{items: (.hits | map(del(.off, .len)))}'
 }

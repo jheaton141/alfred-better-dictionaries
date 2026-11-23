@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import glob
+import gzip
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import alfred
 import appledict
 import plist
 from ProgressBar import IndefiniteProgressBar
+from ProgressBar import ProgressBar
 from ProgressBar import run_parallely_with_progress_bar
 from WorkflowGraph import WorkflowGraph
 
@@ -88,35 +90,29 @@ def filename_defn_pairs(word, defns):
     ]
 
 
-def create_html_file(word, definitions, html_dir):
-    """for <word> and its nth definition,
-    create an HTML file whose name is
-    base16(<word>n).html and content is the definition
+def write_pack(word_defs_map_items, pack_path):
+    """Write every definition into ONE file, each as its own gzip member,
+    and return {filename: (offset, length)}.
 
-    need some sort of 'safe' encoding as words might contain
-    characters that can't be part of a filename. also, we don't
-    want collisions on case-insensitive filesystems.
+    Individual HTML files cost a full 4KB filesystem block each plus
+    directory overhead; one pack of compressed entries is a fraction of the
+    size. Because every entry is an independent gzip member, lib.sh can pull
+    out any single one with `tail | head | gunzip` -- no Python at search time.
     """
-    for filename, definition in filename_defn_pairs(word, definitions):
-        with open(f"{html_dir}/{filename}", "wb") as f:
-            f.write(
-                (
-                    '<!DOCTYPE html><html lang="en"><head>'
-                    '<meta http-equiv="Content-Type" '
-                    'content="text/html; charset=utf-8"/></head>'
-                    f"<body>{definition}</body></html>"
-                ).encode("utf-8")
-            )
-
-
-def create_html_files(word_defs_map_items, html_dir):
-    title = "Creating HTML files..."
-    run_parallely_with_progress_bar(
-        items=word_defs_map_items,
-        func=lambda x: create_html_file(x[0], x[1], html_dir),
-        msgfunc=lambda x: x[0],
-        title=title,
-    )
+    placement = {}
+    items = list(word_defs_map_items)
+    pb = ProgressBar("Packing definitions...")
+    with open(pack_path, "wb") as pack:
+        for n, (word, defs) in enumerate(items):
+            for filename, defn in filename_defn_pairs(word, defs):
+                blob = gzip.compress(defn.encode("utf-8"), 9, mtime=0)
+                placement[filename] = (pack.tell(), len(blob))
+                pack.write(blob)
+            if n % 500 == 0:
+                pb.update(percent=max(((n + 1) * 100) / len(items), 0.01),
+                          message=word)
+    pb.finish()
+    return placement
 
 
 class AccumulatedIndexer:
@@ -140,13 +136,15 @@ class AccumulatedIndexer:
         ipb.finish()
 
 
-def build_index(word_defs_map_items, dict_id, db_path, html_dir):
+def build_index(word_defs_map_items, dict_id, db_path, html_dir, placement):
     index = create_index(dict_id, db_path)
     title = "Building index for instant search..."
 
     def make_alfred_items(word, defs):
         return [
-            make_alfred_item(word, filename, definition, html_dir)
+            make_alfred_item(
+                word, filename, definition, html_dir, placement[filename]
+            )
             for filename, definition in filename_defn_pairs(word, defs)
             if word != ""
         ]
@@ -160,7 +158,7 @@ def build_index(word_defs_map_items, dict_id, db_path, html_dir):
     )
 
 
-def make_alfred_item(word, filename, definition, html_dir):
+def make_alfred_item(word, filename, definition, html_dir, placement):
     soup = BeautifulSoup(definition, "lxml")
     fulltext = soup.get_text()
     snippet = fulltext
@@ -188,6 +186,10 @@ def make_alfred_item(word, filename, definition, html_dir):
         "subtitle": (forms + snippet)[:SUBTITLE_MAX_CHARS],
         "fulltext": fulltext,
         "quicklookurl": html_path,
+        # location of the definition inside the dict's pack file; the HTML
+        # file at html_path is materialized lazily by lib.sh at search time
+        "off": placement[0],
+        "len": placement[1],
     }
 
     ipa_div = soup.find(attrs={"d:prn": "IPA solitary"})
@@ -322,18 +324,21 @@ def import_dict(dict_path, import_base_dir):
         data_path = f"{dict_path}/Contents/Body.data"
 
     dest_dir = f"{import_base_dir}/{dict_id}"
-    dest_html_dir = f"{dest_dir}/html"
+    # HTML files are generated on demand into this cache (see lib.sh)
+    dest_html_dir = f"{import_base_dir}/cache/{dict_id}"
+    pack_path = f"{dest_dir}/defs.pack"
     db_path = f"{import_base_dir}/db"
 
     if not is_search_server_up():
         start_search_server(db_path)
 
     os.makedirs(dest_html_dir, exist_ok=True)
+    os.makedirs(dest_dir, exist_ok=True)
 
     word_defs_map = get_word_defs_map(data_path)
     word_defs_map_items = word_defs_map.items()
-    create_html_files(word_defs_map_items, dest_html_dir)
-    build_index(word_defs_map_items, dict_id, db_path, dest_html_dir)
+    placement = write_pack(word_defs_map_items, pack_path)
+    build_index(word_defs_map_items, dict_id, db_path, dest_html_dir, placement)
 
     imported = {"items": []}
     imported_json_path = f"{import_base_dir}/imported.json"
@@ -408,6 +413,8 @@ def create_index(dict_id, db_path):
     index.update_displayed_attributes(
         [
             # everything except id, forms, and fulltext
+            "off",
+            "len",
             "arg",
             "mods",
             "title",

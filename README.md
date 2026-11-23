@@ -87,14 +87,9 @@ any hotkeys/keywords, follow this:
    keep working, but re-import them (`.dict-factory-reset`) to get the
    smaller, faster index described below.
 
- - This workflow takes a LOT of space on disk. Take a look at the comparison:
-   ```markdown
-   # Built-in dictionaries
-   Oxford American Writer's Thesaurus:  7 MB
-   New Oxford American Dictionary:     36 MB
-   
-   # After importing into BetterDict
-   Oxford American Writer's Thesaurus: 101 MB (html files)
-   New Oxford American Dictionary:     442 MB (html files)
-   Combined search index of these two: 730 MB (apart from html)
-   ```
+ - Definitions are stored in one compressed pack file per dictionary
+   (`<dict>/defs.pack`); the HTML that Alfred previews is generated on
+   demand for the few results shown and cached under `cache/` (pruned after
+   a week of disuse). Together with the slimmer search index this is much
+   smaller than the old one-HTML-file-per-definition layout. Re-import
+   existing dictionaries (`.dict-factory-reset`) to benefit.
