@@ -421,12 +421,13 @@ fn cmd_setup(data_dir: &str) -> Result<()> {
         std::process::id().to_string(),
     )?; // the spawning lookup already holds it
     let r = setup_inner(data_dir);
-    let _ = std::fs::remove_file(format!("{data_dir}/setup.lock"));
     if let Err(e) = &r {
-        ui::log_line(data_dir, &format!("SETUP ERROR: {e:?}"));
+        // marker first, so a lookup never sees neither the lock nor the marker
         let _ = std::fs::write(format!("{data_dir}/setup.failed"), format!("{e}"));
+        ui::log_line(data_dir, &format!("SETUP ERROR: {e:?}"));
         ui::notify(data_dir, "Setup failed", &format!("{e}"));
     }
+    let _ = std::fs::remove_file(format!("{data_dir}/setup.lock"));
     r
 }
 
@@ -435,16 +436,28 @@ fn setup_inner(data_dir: &str) -> Result<()> {
     if found.is_empty() {
         bail!("No built-in dictionary found. Open Dictionary.app > Settings and tick New Oxford American Dictionary and the Thesaurus, then try again (or .dict-import another)");
     }
+    let have: Vec<String> = read_imported(data_dir)["items"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i["arg"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut failed = vec![];
     for (path, id) in &found {
+        if have.contains(id) {
+            continue;
+        }
         if let Err(e) = cmd_import(path, data_dir, false) {
             ui::log_line(data_dir, &format!("ERROR importing {id}: {e:?}"));
             failed.push(format!("{id}: {e}"));
         }
     }
-    if failed.len() == found.len() {
+    if !failed.is_empty() {
         bail!("{}", failed.join("; "));
     }
+    std::fs::write(format!("{data_dir}/setup.done"), "")?;
     ui::notify(
         data_dir,
         "Dictionary and thesaurus ready",

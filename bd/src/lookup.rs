@@ -272,15 +272,22 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
         v["rerun"] = json!(1);
         v
     };
-    if job_running(data_dir, "setup") {
+    let setup_running = job_running(data_dir, "setup");
+    if setup_running && dicts.is_empty() {
         return Ok(setting_up());
     }
-    if dicts.is_empty() {
-        if let Some(why) = recent_setup_failure(data_dir) {
-            return Ok(message("Couldn't set up the built-in dictionaries", &why));
+    if !setup_running && !Path::new(&format!("{data_dir}/setup.done")).exists() {
+        let failure = recent_setup_failure(data_dir);
+        if failure.is_none() && !tried_recently(data_dir) {
+            let _ = std::fs::write(format!("{data_dir}/setup.tried"), "");
+            spawn_job(data_dir, "setup");
         }
-        spawn_job(data_dir, "setup");
-        return Ok(setting_up());
+        if dicts.is_empty() {
+            return Ok(match failure {
+                Some(why) => message("Couldn't set up the built-in dictionaries", &why),
+                None => setting_up(),
+            });
+        }
     }
 
     // Dictionaries imported by older versions need their index built once.
@@ -318,16 +325,24 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
     search_all(data_dir, &dicts, query)
 }
 
+/// True if a setup job was started within the last minute (covers a crash that left no marker).
+fn tried_recently(data_dir: &str) -> bool {
+    fresh_file(&format!("{data_dir}/setup.tried"))
+}
+
+fn fresh_file(p: &str) -> bool {
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|e| e.as_secs() < 60)
+}
+
 /// Why the last automatic setup failed, if it did within the last minute (so a
 /// fixed problem is retried soon, but keystrokes don't respawn the job).
 fn recent_setup_failure(data_dir: &str) -> Option<String> {
     let p = format!("{data_dir}/setup.failed");
-    let fresh = std::fs::metadata(&p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|e| e.as_secs() < 60);
-    if fresh {
+    if fresh_file(&p) {
         std::fs::read_to_string(&p)
             .ok()
             .map(|t| t.trim().to_string())
