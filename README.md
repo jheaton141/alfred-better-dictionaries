@@ -65,6 +65,11 @@ of it come first, and the fallback weights rare words above common ones and
 ignores function words (`run away` returns *run*, `kick the bucket` returns
 *croak* and *expire*). Output is deterministic.
 
+**Dependencies.** `bd` builds from a handful of well-known crates, and CI runs
+`cargo deny` (advisories, licenses, sources) on every push, so an unmaintained
+or vulnerable dependency fails the build. Search results and the generated
+HTML were verified byte-identical across the last dependency upgrade.
+
 **Caveats.** Timings are from one machine; the original's import time is a
 single run (it hung twice on Python 3.14 until a fork-safety workaround was
 set), and the "first lookup" figures had a warm OS page cache. Natural-language
