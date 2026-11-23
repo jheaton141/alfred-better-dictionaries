@@ -43,7 +43,11 @@ fn mk_key(tier: u64, title_chars: usize, doc: u32) -> u64 {
     (tier << 48) | ((0xFFFF - title_chars.min(0xFFFF)) as u64) << 32 | (u32::MAX - doc) as u64
 }
 
-fn put(best: &mut HashMap<u32, u64>, doc: u32, key: u64) {
+/// Record a candidate; untitled entries (front matter) are never results.
+fn put(ix: &Index, best: &mut HashMap<u32, u64>, doc: u32, key: u64) {
+    if ix.doc(doc).title.trim().is_empty() {
+        return;
+    }
     let e = best.entry(doc).or_insert(0);
     if key > *e {
         *e = key;
@@ -253,7 +257,7 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         if !fold_key(ix.doc(doc).title).starts_with(&qn) {
             break;
         }
-        put(&mut best, doc, classify(ix, doc, &qt, &qn));
+        put(ix, &mut best, doc, classify(ix, doc, &qt, &qn));
         i += 1;
         scanned += 1;
     }
@@ -269,7 +273,7 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         cand.sort_by_key(|&(_, in_title)| !in_title); // stable: title matches first
         for (doc, _) in cand.into_iter().take(CANDIDATE_CAP) {
             if !best.contains_key(&doc) {
-                put(&mut best, doc, classify(ix, doc, &qt, &qn));
+                put(ix, &mut best, doc, classify(ix, doc, &qt, &qn));
             }
         }
     }
@@ -302,7 +306,7 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
             for (doc, _) in cand.into_iter().take(CANDIDATE_CAP) {
                 if !best.contains_key(&doc) {
                     let tn = fold_key(ix.doc(doc).title);
-                    put(&mut best, doc, mk_key(T_TYPO, tn.chars().count(), doc));
+                    put(ix, &mut best, doc, mk_key(T_TYPO, tn.chars().count(), doc));
                 }
             }
         }
@@ -330,7 +334,7 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
             for doc in acc.into_iter().take(CANDIDATE_CAP) {
                 if !best.contains_key(&doc) {
                     let tn = fold_key(ix.doc(doc).title);
-                    put(&mut best, doc, mk_key(T_FULL, tn.chars().count(), doc));
+                    put(ix, &mut best, doc, mk_key(T_FULL, tn.chars().count(), doc));
                 }
             }
         }
@@ -355,6 +359,7 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         for (doc, c) in counts {
             let tn = fold_key(ix.doc(doc).title);
             put(
+                ix,
                 &mut best,
                 doc,
                 mk_key(T_RELAXED + c, tn.chars().count(), doc),
@@ -366,8 +371,6 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         .into_iter()
         .map(|(doc, key)| Hit { doc, key })
         .collect();
-    // front matter and other untitled entries are not lookup results
-    hits.retain(|h| !ix.doc(h.doc).title.trim().is_empty());
     hits.sort_unstable_by_key(|a| std::cmp::Reverse(a.key));
     hits.truncate(limit);
     hits
@@ -512,8 +515,17 @@ mod tests {
     #[test]
     fn untitled_entries_are_not_results() {
         let (_d, ix) = build(&[("", "", "to be or not to be preface"), ("be", "", "verb")]);
-        assert_eq!(titles(&ix, "to be or not to be"), Vec::<String>::new());
+        assert_eq!(titles(&ix, "to be or not to be"), vec!["be"]);
         assert_eq!(titles(&ix, "be"), vec!["be"]);
+    }
+
+    #[test]
+    fn untitled_only_matches_fall_through_to_real_entries() {
+        let (_d, ix) = build(&[
+            ("", "", "lexicographers evidence preface"),
+            ("clay", "", "lexicographers dig clay"),
+        ]);
+        assert_eq!(titles(&ix, "lexicographers evidence"), vec!["clay"]);
     }
 
     #[test]

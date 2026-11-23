@@ -97,7 +97,9 @@ pub fn search_dict(data_dir: &str, id: &str, q: &str) -> Result<Value> {
     let ix = match Index::open(&index_path(data_dir, id)) {
         Ok(ix) => ix,
         Err(_) => {
-            if !Path::new(&format!("{data_dir}/{id}/defs.pack")).exists() {
+            if !Path::new(&format!("{data_dir}/{id}/defs.pack")).exists()
+                && !Path::new(&format!("{data_dir}/{id}/html")).is_dir()
+            {
                 return Ok(message(
                     "This dictionary's files are missing",
                     "Re-import it with .dict-import",
