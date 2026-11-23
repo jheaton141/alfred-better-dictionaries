@@ -7,7 +7,13 @@ pub fn tokens(s: &str) -> Vec<String> {
     // titles are stored as in the dictionary's XML: &amp; must not index as "amp"
     let unescaped;
     let s = if s.contains('&') {
-        unescaped = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'");
+        unescaped = s
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&#39;", "'");
         unescaped.as_str()
     } else {
         s
@@ -35,7 +41,10 @@ mod tests {
     use super::*;
     #[test]
     fn folds() {
-        assert_eq!(tokens("Café-au-lait, N°5"), vec!["cafe", "au", "lait", "n", "5"]);
+        assert_eq!(
+            tokens("Café-au-lait, N°5"),
+            vec!["cafe", "au", "lait", "n", "5"]
+        );
         assert_eq!(tokens("  "), Vec::<String>::new());
         assert_eq!(tokens("Zoë &amp; co"), vec!["zoe", "co"]);
     }

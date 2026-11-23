@@ -5,11 +5,30 @@ use plist::{Dictionary, Value};
 use std::path::Path;
 
 /// Files that make up the workflow (besides `bd` itself).
-pub const FILES: &[&str] = &["AlfredExtraPane.app", "dict-entry.css", "extra-pane-config.json", "icon.png", "info.plist", "lookup.sh", "README.md", "sayipa.sh", "search.sh", "setup.sh"];
+pub const FILES: &[&str] = &[
+    "AlfredExtraPane.app",
+    "dict-entry.css",
+    "extra-pane-config.json",
+    "icon.png",
+    "info.plist",
+    "lookup.sh",
+    "README.md",
+    "sayipa.sh",
+    "search.sh",
+    "setup.sh",
+];
 /// Scripts refreshed on upgrade.
 const SCRIPTS: &[&str] = &["lookup.sh", "search.sh", "sayipa.sh", "setup.sh"];
 /// Left behind by older versions.
-const OBSOLETE: &[&str] = &["pyapp", "uv", "sayipa.py", "lib.sh", "alfred-dict-server", "jq", "mkapps.sh"];
+const OBSOLETE: &[&str] = &[
+    "pyapp",
+    "uv",
+    "sayipa.py",
+    "lib.sh",
+    "alfred-dict-server",
+    "jq",
+    "mkapps.sh",
+];
 
 fn dict(v: &mut Value) -> Result<&mut Dictionary> {
     v.as_dictionary_mut().context("not a dictionary")
@@ -24,9 +43,29 @@ fn uid_of(o: &Value) -> Option<String> {
 pub fn make_export_ready(wf: &mut Value, readme: &str) -> Result<()> {
     let root = dict(wf)?;
     root.insert("variablesdontexport".into(), Value::Array(vec![]));
-    let uidata = root.get("uidata").and_then(|v| v.as_dictionary()).context("uidata")?.clone();
-    let noexport: Vec<String> = uidata.iter().filter(|(_, d)| d.as_dictionary().is_some_and(|d| d.contains_key("noexport"))).map(|(k, _)| k.clone()).collect();
-    let routers: Vec<String> = uidata.iter().filter(|(_, d)| d.as_dictionary().and_then(|d| d.get("note")).and_then(|n| n.as_string()) == Some("router")).map(|(k, _)| k.clone()).collect();
+    let uidata = root
+        .get("uidata")
+        .and_then(|v| v.as_dictionary())
+        .context("uidata")?
+        .clone();
+    let noexport: Vec<String> = uidata
+        .iter()
+        .filter(|(_, d)| {
+            d.as_dictionary()
+                .is_some_and(|d| d.contains_key("noexport"))
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    let routers: Vec<String> = uidata
+        .iter()
+        .filter(|(_, d)| {
+            d.as_dictionary()
+                .and_then(|d| d.get("note"))
+                .and_then(|n| n.as_string())
+                == Some("router")
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
     if let Some(Value::Dictionary(u)) = root.get_mut("uidata") {
         for k in &noexport {
             u.remove(k);
@@ -38,7 +77,12 @@ pub fn make_export_ready(wf: &mut Value, readme: &str) -> Result<()> {
         }
         for (_, list) in c.iter_mut() {
             if let Value::Array(a) = list {
-                a.retain(|ci| !ci.as_dictionary().and_then(|d| d.get("destinationuid")).and_then(|u| u.as_string()).is_some_and(|u| noexport.iter().any(|n| n == u)));
+                a.retain(|ci| {
+                    !ci.as_dictionary()
+                        .and_then(|d| d.get("destinationuid"))
+                        .and_then(|u| u.as_string())
+                        .is_some_and(|u| noexport.iter().any(|n| n == u))
+                });
             }
         }
     }
@@ -46,7 +90,12 @@ pub fn make_export_ready(wf: &mut Value, readme: &str) -> Result<()> {
         objs.retain(|o| !uid_of(o).is_some_and(|u| noexport.contains(&u)));
         for o in objs.iter_mut() {
             if uid_of(o).is_some_and(|u| routers.contains(&u)) {
-                if let Some(Value::Array(conds)) = o.as_dictionary_mut().and_then(|d| d.get_mut("config")).and_then(|c| c.as_dictionary_mut()).and_then(|c| c.get_mut("conditions")) {
+                if let Some(Value::Array(conds)) = o
+                    .as_dictionary_mut()
+                    .and_then(|d| d.get_mut("config"))
+                    .and_then(|c| c.as_dictionary_mut())
+                    .and_then(|c| c.get_mut("conditions"))
+                {
                     conds.truncate(1);
                 }
             }
@@ -78,8 +127,16 @@ pub fn package(repo: &str, out: &str) -> Result<()> {
     }
     std::fs::copy(std::env::current_exe()?, format!("{out}/bd"))?;
     let mut wf = Value::from_file(format!("{out}/info.plist"))?;
-    make_export_ready(&mut wf, &std::fs::read_to_string(format!("{repo}/README.md"))?)?;
-    let name = wf.as_dictionary().and_then(|d| d.get("name")).and_then(|n| n.as_string()).unwrap_or("workflow").to_string();
+    make_export_ready(
+        &mut wf,
+        &std::fs::read_to_string(format!("{repo}/README.md"))?,
+    )?;
+    let name = wf
+        .as_dictionary()
+        .and_then(|d| d.get("name"))
+        .and_then(|n| n.as_string())
+        .unwrap_or("workflow")
+        .to_string();
     wf.to_file_xml(format!("{out}/info.plist"))?;
     println!("{name}");
     Ok(())
@@ -87,18 +144,31 @@ pub fn package(repo: &str, out: &str) -> Result<()> {
 
 fn find_installed() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let mut roots = vec![format!("{home}/Library/Application Support/Alfred/Alfred.alfredpreferences")];
-    if let Ok(o) = std::process::Command::new("defaults").args(["read", "com.runningwithcrayons.Alfred", "syncfolder"]).output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().replacen('~', &home, 1);
+    let mut roots = vec![format!(
+        "{home}/Library/Application Support/Alfred/Alfred.alfredpreferences"
+    )];
+    if let Ok(o) = std::process::Command::new("defaults")
+        .args(["read", "com.runningwithcrayons.Alfred", "syncfolder"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .replacen('~', &home, 1);
         if !s.is_empty() {
             roots.insert(0, format!("{s}/Alfred.alfredpreferences"));
         }
     }
     for r in roots {
-        for e in std::fs::read_dir(format!("{r}/workflows")).into_iter().flatten().flatten() {
+        for e in std::fs::read_dir(format!("{r}/workflows"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let p = e.path().join("info.plist");
             if let Ok(Value::Dictionary(d)) = Value::from_file(&p) {
-                if d.get("bundleid").and_then(|b| b.as_string()) == Some("mr.pennyworth.betterDicts") {
+                if d.get("bundleid").and_then(|b| b.as_string())
+                    == Some("mr.pennyworth.betterDicts")
+                {
                     return Some(e.path().to_string_lossy().into_owned());
                 }
             }
@@ -111,13 +181,35 @@ fn find_installed() -> Option<String> {
 /// dictionary, keyword and hotkey it holds untouched.
 fn patch_plist(path: &str, new: &Value) -> Result<()> {
     let mut wf = Value::from_file(path)?;
-    let new_objs: Vec<Value> = new.as_dictionary().and_then(|d| d.get("objects")).and_then(|o| o.as_array()).cloned().unwrap_or_default();
+    let new_objs: Vec<Value> = new
+        .as_dictionary()
+        .and_then(|d| d.get("objects"))
+        .and_then(|o| o.as_array())
+        .cloned()
+        .unwrap_or_default();
     if let Some(Value::Array(objs)) = dict(&mut wf)?.get_mut("objects") {
         for o in objs.iter_mut() {
             let Some(uid) = uid_of(o) else { continue };
-            let Some(n) = new_objs.iter().find(|n| uid_of(n).as_deref() == Some(&uid)) else { continue };
-            let (Some(oc), Some(nc)) = (o.as_dictionary_mut().and_then(|d| d.get_mut("config")).and_then(|c| c.as_dictionary_mut()), n.as_dictionary().and_then(|d| d.get("config")).and_then(|c| c.as_dictionary())) else { continue };
-            for k in ["script", "scriptfile", "alfredfiltersresults", "alfredfiltersresultsmatchmode", "subtext"] {
+            let Some(n) = new_objs.iter().find(|n| uid_of(n).as_deref() == Some(&uid)) else {
+                continue;
+            };
+            let (Some(oc), Some(nc)) = (
+                o.as_dictionary_mut()
+                    .and_then(|d| d.get_mut("config"))
+                    .and_then(|c| c.as_dictionary_mut()),
+                n.as_dictionary()
+                    .and_then(|d| d.get("config"))
+                    .and_then(|c| c.as_dictionary()),
+            ) else {
+                continue;
+            };
+            for k in [
+                "script",
+                "scriptfile",
+                "alfredfiltersresults",
+                "alfredfiltersresultsmatchmode",
+                "subtext",
+            ] {
                 if oc.contains_key("script") || k == "script" {
                     if let Some(v) = nc.get(k) {
                         oc.insert(k.into(), v.clone());
@@ -134,7 +226,11 @@ fn patch_plist(path: &str, new: &Value) -> Result<()> {
 }
 
 /// `bd upgrade <repo> [workflow_dir]`
-pub fn upgrade(repo: &str, dest: Option<&str>, migrate: impl FnOnce(&str, &str) -> Result<()>) -> Result<()> {
+pub fn upgrade(
+    repo: &str,
+    dest: Option<&str>,
+    migrate: impl FnOnce(&str, &str) -> Result<()>,
+) -> Result<()> {
     let dest = match dest {
         Some(d) => d.to_string(),
         None => find_installed().context("Couldn't find the installed workflow; pass its folder (Alfred > Workflows > right-click > Open in Finder).")?,
@@ -143,7 +239,12 @@ pub fn upgrade(repo: &str, dest: Option<&str>, migrate: impl FnOnce(&str, &str) 
         bail!("{dest} has no info.plist");
     }
     let new = Value::from_file(format!("{repo}/info.plist"))?;
-    let ver = new.as_dictionary().and_then(|d| d.get("version")).and_then(|v| v.as_string()).unwrap_or("new").to_string();
+    let ver = new
+        .as_dictionary()
+        .and_then(|d| d.get("version"))
+        .and_then(|v| v.as_string())
+        .unwrap_or("new")
+        .to_string();
     println!("Upgrading {dest} -> {ver}");
     for name in ["info.plist", "info.plist.orig"] {
         let p = format!("{dest}/{name}");

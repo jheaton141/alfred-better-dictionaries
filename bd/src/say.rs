@@ -33,7 +33,9 @@ fn uri_encode(s: &str) -> String {
     let mut o = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => o.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                o.push(b as char)
+            }
             _ => o.push_str(&format!("%{b:02X}")),
         }
     }
@@ -56,7 +58,12 @@ fn amz_time(secs: u64) -> (String, String) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     let date = format!("{y:04}{m:02}{d:02}");
-    let full = format!("{date}T{:02}{:02}{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60);
+    let full = format!(
+        "{date}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    );
     (date, full)
 }
 
@@ -78,10 +85,17 @@ fn presign(ak: &str, sk: &str, token: &str, ssml: &str, voice: &str, secs: u64) 
         ("X-Amz-SignedHeaders".into(), "host".into()),
     ];
     q.sort();
-    let query: String = q.iter().map(|(k, v)| format!("{}={}", uri_encode(k), uri_encode(v))).collect::<Vec<_>>().join("&");
+    let query: String = q
+        .iter()
+        .map(|(k, v)| format!("{}={}", uri_encode(k), uri_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
     let empty = hex(&Sha256::digest(b""));
     let canonical = format!("GET\n/v1/speech\n{query}\nhost:{HOST}\n\nhost\n{empty}");
-    let to_sign = format!("AWS4-HMAC-SHA256\n{stamp}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{stamp}\n{scope}\n{}",
+        hex(&Sha256::digest(canonical.as_bytes()))
+    );
     let sig = hex(&hmac(&signing_key(sk, &date, REGION, "polly"), &to_sign));
     format!("https://{HOST}/v1/speech?{query}&X-Amz-Signature={sig}")
 }
@@ -90,20 +104,29 @@ fn curl_json(target: &str, body: &Value) -> Result<Value> {
     let out = Command::new("/usr/bin/curl")
         .args(["-sS", "--fail-with-body", "--max-time", "15", "-X", "POST"])
         .args(["-H", "Content-Type: application/x-amz-json-1.1"])
-        .args(["-H", &format!("X-Amz-Target: AWSCognitoIdentityService.{target}")])
+        .args([
+            "-H",
+            &format!("X-Amz-Target: AWSCognitoIdentityService.{target}"),
+        ])
         .args(["-d", &body.to_string()])
         .arg(format!("https://cognito-identity.{REGION}.amazonaws.com/"))
         .stderr(Stdio::inherit())
         .output()
         .context("running curl")?;
     if !out.status.success() {
-        bail!("cognito {target} failed: {}", String::from_utf8_lossy(&out.stdout));
+        bail!(
+            "cognito {target} failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
 pub fn say_ipa(ipa: &str, voice: &str, out: Option<&str>, play: bool) -> Result<()> {
-    let tmp_out = std::env::temp_dir().join(format!("bd-ipa-{}.mp3", std::process::id())).to_string_lossy().into_owned();
+    let tmp_out = std::env::temp_dir()
+        .join(format!("bd-ipa-{}.mp3", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
     let out = out.unwrap_or(&tmp_out);
     let id = curl_json("GetId", &json!({"IdentityPoolId": POOL_ID}))?;
     let id = id["IdentityId"].as_str().context("no IdentityId")?;
@@ -114,12 +137,28 @@ pub fn say_ipa(ipa: &str, voice: &str, out: Option<&str>, play: bool) -> Result<
         c["SecretKey"].as_str().context("no SecretKey")?,
         c["SessionToken"].as_str().context("no SessionToken")?,
     );
-    let esc = ipa.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\'', "&apos;").replace('"', "&quot;");
+    let esc = ipa
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&apos;")
+        .replace('"', "&quot;");
     let ssml = format!("<speak><phoneme alphabet='ipa' ph='{esc}'></phoneme></speak>");
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
     let url = presign(ak, sk, tok, &ssml, voice, now);
     let st = Command::new("/usr/bin/curl")
-        .args(["-sS", "--fail", "--max-time", "20", "-H", &format!("Referer: {REFERER}"), "-o", out])
+        .args([
+            "-sS",
+            "--fail",
+            "--max-time",
+            "20",
+            "-H",
+            &format!("Referer: {REFERER}"),
+            "-o",
+            out,
+        ])
         .arg(&url)
         .status()
         .context("running curl")?;
@@ -141,8 +180,16 @@ mod tests {
     #[test]
     fn signing_key_matches_aws_docs() {
         // Example from the AWS SigV4 documentation (iam / us-east-1 / 20150830).
-        let k = signing_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830", "us-east-1", "iam");
-        assert_eq!(hex(&k), "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9");
+        let k = signing_key(
+            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            "20150830",
+            "us-east-1",
+            "iam",
+        );
+        assert_eq!(
+            hex(&k),
+            "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
+        );
     }
 
     #[test]

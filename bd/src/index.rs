@@ -115,7 +115,10 @@ impl Builder {
             }
         }
         for (t, in_title) in per_doc {
-            self.head.entry(t).or_default().push(doc << 1 | in_title as u32);
+            self.head
+                .entry(t)
+                .or_default()
+                .push(doc << 1 | in_title as u32);
         }
         for t in &p.full_terms {
             self.full.entry(t.clone()).or_default().push(doc);
@@ -123,10 +126,14 @@ impl Builder {
     }
 
     fn term_section(map: HashMap<String, Vec<u32>>, max_df: usize) -> Vec<u8> {
-        let mut terms: Vec<(String, Vec<u32>)> = map.into_iter().filter(|(_, v)| v.len() <= max_df).collect();
+        let mut terms: Vec<(String, Vec<u32>)> =
+            map.into_iter().filter(|(_, v)| v.len() <= max_df).collect();
         terms.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let n = terms.len();
-        let (mut term_off, mut post_off) = (Vec::with_capacity((n + 1) * 4), Vec::with_capacity((n + 1) * 8));
+        let (mut term_off, mut post_off) = (
+            Vec::with_capacity((n + 1) * 4),
+            Vec::with_capacity((n + 1) * 8),
+        );
         let (mut tb, mut pb) = (Vec::new(), Vec::new());
         for (t, p) in &terms {
             term_off.extend((tb.len() as u32).to_le_bytes());
@@ -159,7 +166,11 @@ impl Builder {
         doc_offsets.extend((self.doc_blob.len() as u64).to_le_bytes());
 
         let mut order: Vec<u32> = (0..n as u32).collect();
-        order.sort_unstable_by(|&a, &b| self.keys[a as usize].cmp(&self.keys[b as usize]).then(a.cmp(&b)));
+        order.sort_unstable_by(|&a, &b| {
+            self.keys[a as usize]
+                .cmp(&self.keys[b as usize])
+                .then(a.cmp(&b))
+        });
         let mut sorted = Vec::with_capacity(n * 4);
         for d in order {
             sorted.extend(d.to_le_bytes());
@@ -184,7 +195,9 @@ impl Builder {
         }
         let tmp = format!("{path}.tmp");
         {
-            let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp).with_context(|| format!("creating {tmp}"))?);
+            let mut f = std::io::BufWriter::new(
+                std::fs::File::create(&tmp).with_context(|| format!("creating {tmp}"))?,
+            );
             f.write_all(&header)?;
             for s in sections {
                 f.write_all(s)?;
@@ -224,7 +237,13 @@ impl<'a> Terms<'a> {
         if sec.len() < pbs {
             bail!("index: truncated term section");
         }
-        Ok(Terms { n, term_off, post_off: &sec[po..tbs], tb: &sec[tbs..pbs], pb: &sec[pbs..] })
+        Ok(Terms {
+            n,
+            term_off,
+            post_off: &sec[po..tbs],
+            tb: &sec[tbs..pbs],
+            pb: &sec[pbs..],
+        })
     }
 
     pub fn term(&self, i: usize) -> &'a [u8] {
@@ -308,7 +327,7 @@ impl Index {
             let base = 16 + i * 16;
             let off = u64::from_le_bytes(mmap[base..base + 8].try_into().unwrap()) as usize;
             let len = u64::from_le_bytes(mmap[base + 8..base + 16].try_into().unwrap()) as usize;
-            if off.checked_add(len).map_or(true, |e| e > mmap.len()) {
+            if off.checked_add(len).is_none_or(|e| e > mmap.len()) {
                 bail!("{path} is truncated");
             }
             *s = (off, len);
@@ -330,7 +349,13 @@ impl Index {
         let name = read_str(blob, &mut pos);
         let off = read_varint(blob, &mut pos);
         let len = read_varint(blob, &mut pos);
-        DocView { title, forms, name, off, len }
+        DocView {
+            title,
+            forms,
+            name,
+            off,
+            len,
+        }
     }
 
     /// Doc id at position `i` of the title-sorted order.

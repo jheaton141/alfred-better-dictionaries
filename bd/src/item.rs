@@ -4,6 +4,8 @@ use scraper::{Html, Selector};
 
 pub const SUBTITLE_MAX_CHARS: usize = 300;
 pub const FULLTEXT_MAX_CHARS: usize = 4000;
+/// Only the start of an entry is parsed for the result line (entries reach 450 KB).
+const DISPLAY_PARSE_MAX_BYTES: usize = 32 * 1024;
 
 fn text_of<'a>(it: impl Iterator<Item = &'a str>) -> String {
     it.collect()
@@ -59,28 +61,77 @@ pub struct Prepared {
 pub fn prepare(sel: &Sel, word: &str, name: &str, definition: &str) -> Prepared {
     let doc = Html::parse_fragment(definition);
     let fulltext = trunc(&text_of(doc.root_element().text()), FULLTEXT_MAX_CHARS);
-    let forms = doc.select(&sel.forms).next().map(|e| text_of(e.text())).unwrap_or_default();
-    let mut full_terms: Vec<String> = text::tokens(&fulltext).into_iter().filter(|t| t.len() <= 40).collect();
+    let forms = doc
+        .select(&sel.forms)
+        .next()
+        .map(|e| text_of(e.text()))
+        .unwrap_or_default();
+    let mut full_terms: Vec<String> = text::tokens(&fulltext)
+        .into_iter()
+        .filter(|t| t.len() <= 40)
+        .collect();
     full_terms.sort_unstable();
     full_terms.dedup();
-    Prepared { rec: DocRec { title: word.to_string(), forms, name: name.to_string(), off: 0, len: 0 }, full_terms }
+    Prepared {
+        rec: DocRec {
+            title: word.to_string(),
+            forms,
+            name: name.to_string(),
+            off: 0,
+            len: 0,
+        },
+        full_terms,
+    }
 }
 
 /// The result line shown under the title, plus the IPA pronunciation (if any).
 pub fn display(sel: &Sel, definition: &str) -> (String, String) {
+    let mut end = definition.len().min(DISPLAY_PARSE_MAX_BYTES);
+    while !definition.is_char_boundary(end) {
+        end -= 1;
+    }
+    let definition = &definition[..end];
     let doc = Html::parse_fragment(definition);
     let mut snippet = text_of(doc.root_element().text());
     if let Some(e) = doc.select(&sel.def).next() {
         snippet = text_of(e.text());
     }
     let snippet = trunc(&snippet, SUBTITLE_MAX_CHARS);
-    let forms = doc.select(&sel.forms).next().map(|e| text_of(e.text())).unwrap_or_default();
+    let forms = doc
+        .select(&sel.forms)
+        .next()
+        .map(|e| text_of(e.text()))
+        .unwrap_or_default();
     let mut subtitle = trunc(&format!("{forms}{snippet}"), SUBTITLE_MAX_CHARS);
     let mut pron = String::new();
-    let ipa = doc.select(&sel.ipa_solitary).next().or_else(|| doc.select(&sel.ipa).next());
+    let ipa = doc
+        .select(&sel.ipa_solitary)
+        .next()
+        .or_else(|| doc.select(&sel.ipa).next());
     if let Some(e) = ipa {
-        pron = text_of(e.text()).split(',').next().unwrap_or("").to_string();
+        pron = text_of(e.text())
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .to_string();
         subtitle = format!("[⌘: 🗣] {subtitle}");
     }
     (subtitle, pron)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_reads_only_the_start_of_huge_entries() {
+        let sel = Sel::new();
+        // multi-byte text straddling the cut must not panic
+        let filler = "é".repeat(DISPLAY_PARSE_MAX_BYTES);
+        let (sub, _) = display(&sel, &format!(r#"<span d:def="1">early</span>{filler}"#));
+        assert!(sub.starts_with("early"));
+        // a definition beyond the cut is not parsed
+        let (sub, _) = display(&sel, &format!(r#"{filler}<span d:def="1">late</span>"#));
+        assert!(!sub.contains("late"));
+    }
 }

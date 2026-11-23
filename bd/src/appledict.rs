@@ -30,7 +30,7 @@ pub fn definitions(path: &str) -> Result<Vec<String>> {
         let decompressed_size = int_at(&data, pos + 8)?.max(0) as usize;
         let start = pos.checked_add(12).context("corrupt section")?;
         let comp = data
-            .get(start..start.checked_add(compressed_size).unwrap_or(usize::MAX))
+            .get(start..start.saturating_add(compressed_size))
             .context("section runs past end of file")?;
         let mut dec = Vec::with_capacity(decompressed_size.min(1 << 26));
         ZlibDecoder::new(comp).read_to_end(&mut dec)?;

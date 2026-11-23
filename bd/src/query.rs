@@ -25,6 +25,8 @@ pub const T_RELAXED: u64 = 20;
 const PREFIX_SCAN_CAP: usize = 4000;
 const TERM_EXPANSION_CAP: usize = 300;
 const CANDIDATE_CAP: usize = 5000;
+/// Query words beyond this are ignored (a pasted paragraph must not take seconds).
+const MAX_QUERY_WORDS: usize = 12;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
@@ -79,9 +81,6 @@ fn classify(ix: &Index, doc: u32, qt: &[String], qn: &str) -> u64 {
         } else if all_match(qt, &tt) {
             T_TITLE_WORDS
         } else {
-            let mut all = tt;
-            all.extend(ft);
-            let _ = all_match(qt, &all);
             T_HEAD_WORDS
         }
     };
@@ -145,7 +144,11 @@ fn intersect_head(mut lists: Vec<Vec<(u32, bool)>>) -> Vec<(u32, bool)> {
     for l in it {
         acc = acc
             .into_iter()
-            .filter_map(|(d, f)| l.binary_search_by_key(&d, |x| x.0).ok().map(|k| (d, f && l[k].1)))
+            .filter_map(|(d, f)| {
+                l.binary_search_by_key(&d, |x| x.0)
+                    .ok()
+                    .map(|k| (d, f && l[k].1))
+            })
             .collect();
         if acc.is_empty() {
             break;
@@ -205,11 +208,15 @@ fn fuzzy_terms(t: &Terms, tok: &str, prefix: bool) -> Vec<usize> {
         }
         let ok = if ascii && term.is_ascii() {
             let qb = tok.as_bytes();
-            lev_le(qb, term, k).is_some() || (prefix && term.len() > qb.len() && lev_le(qb, &term[..qb.len()], k).is_some())
+            lev_le(qb, term, k).is_some()
+                || (prefix && term.len() > qb.len() && lev_le(qb, &term[..qb.len()], k).is_some())
         } else {
-            let Ok(s) = std::str::from_utf8(term) else { continue };
+            let Ok(s) = std::str::from_utf8(term) else {
+                continue;
+            };
             let tc: Vec<char> = s.chars().collect();
-            lev_le(&q, &tc, k).is_some() || (prefix && tc.len() > q.len() && lev_le(&q, &tc[..q.len()], k).is_some())
+            lev_le(&q, &tc, k).is_some()
+                || (prefix && tc.len() > q.len() && lev_le(&q, &tc[..q.len()], k).is_some())
         };
         if ok {
             out.push(i);
@@ -221,8 +228,14 @@ fn fuzzy_terms(t: &Terms, tok: &str, prefix: bool) -> Vec<usize> {
     out
 }
 
+fn query_tokens(q: &str) -> Vec<String> {
+    let mut qt = tokens(q);
+    qt.truncate(MAX_QUERY_WORDS);
+    qt
+}
+
 pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
-    let qt = tokens(q);
+    let qt = query_tokens(q);
     if qt.is_empty() || ix.n == 0 {
         return vec![];
     }
@@ -246,7 +259,11 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
     }
 
     // B. every query word is a word of the title/forms.
-    let lists: Vec<Vec<(u32, bool)>> = qt.iter().enumerate().map(|(j, t)| head_docs(&head, t, j == last)).collect();
+    let lists: Vec<Vec<(u32, bool)>> = qt
+        .iter()
+        .enumerate()
+        .map(|(j, t)| head_docs(&head, t, j == last))
+        .collect();
     if lists.iter().all(|l| !l.is_empty()) {
         let mut cand = intersect_head(lists);
         cand.sort_by_key(|&(_, in_title)| !in_title); // stable: title matches first
@@ -257,14 +274,22 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         }
     }
 
-    let good = |best: &HashMap<u32, u64>| best.values().filter(|&&k| tier_of(k) >= T_HEAD_WORDS).count();
+    let good = |best: &HashMap<u32, u64>| {
+        best.values()
+            .filter(|&&k| tier_of(k) >= T_HEAD_WORDS)
+            .count()
+    };
 
     // C. typo tolerance.
     if good(&best) < limit {
         let mut lists: Vec<Vec<(u32, bool)>> = vec![];
         for (j, t) in qt.iter().enumerate() {
             let mut terms: Vec<usize> = vec![];
-            let (lo, hi) = if j == last { head.prefix_range(t.as_bytes()) } else { head.exact(t.as_bytes()).map_or((0, 0), |i| (i, i + 1)) };
+            let (lo, hi) = if j == last {
+                head.prefix_range(t.as_bytes())
+            } else {
+                head.exact(t.as_bytes()).map_or((0, 0), |i| (i, i + 1))
+            };
             terms.extend(lo..hi.min(lo + TERM_EXPANSION_CAP));
             terms.extend(fuzzy_terms(&head, t, j == last));
             terms.sort_unstable();
@@ -316,7 +341,10 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         let full = ix.full();
         let mut counts: HashMap<u32, u64> = HashMap::new();
         for (j, t) in qt.iter().enumerate() {
-            let mut docs: Vec<u32> = head_docs(&head, t, j == last).into_iter().map(|x| x.0).collect();
+            let mut docs: Vec<u32> = head_docs(&head, t, j == last)
+                .into_iter()
+                .map(|x| x.0)
+                .collect();
             docs.extend(full_docs(&full, t, j == last));
             docs.sort_unstable();
             docs.dedup();
@@ -326,12 +354,21 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         }
         for (doc, c) in counts {
             let tn = fold_key(ix.doc(doc).title);
-            put(&mut best, doc, mk_key(T_RELAXED + c, tn.chars().count(), doc));
+            put(
+                &mut best,
+                doc,
+                mk_key(T_RELAXED + c, tn.chars().count(), doc),
+            );
         }
     }
 
-    let mut hits: Vec<Hit> = best.into_iter().map(|(doc, key)| Hit { doc, key }).collect();
-    hits.sort_unstable_by(|a, b| b.key.cmp(&a.key));
+    let mut hits: Vec<Hit> = best
+        .into_iter()
+        .map(|(doc, key)| Hit { doc, key })
+        .collect();
+    // front matter and other untitled entries are not lookup results
+    hits.retain(|h| !ix.doc(h.doc).title.trim().is_empty());
+    hits.sort_unstable_by_key(|a| std::cmp::Reverse(a.key));
     hits.truncate(limit);
     hits
 }
@@ -374,7 +411,12 @@ mod tests {
             pub fn new() -> Dir {
                 use std::sync::atomic::{AtomicUsize, Ordering};
                 static N: AtomicUsize = AtomicUsize::new(0);
-                let path = format!("{}/bd-test-{}-{}", std::env::temp_dir().display(), std::process::id(), N.fetch_add(1, Ordering::SeqCst));
+                let path = format!(
+                    "{}/bd-test-{}-{}",
+                    std::env::temp_dir().display(),
+                    std::process::id(),
+                    N.fetch_add(1, Ordering::SeqCst)
+                );
                 std::fs::create_dir_all(&path).unwrap();
                 Dir { path }
             }
@@ -387,7 +429,10 @@ mod tests {
     }
 
     fn titles(ix: &Index, q: &str) -> Vec<String> {
-        search(ix, q, 9).iter().map(|h| ix.doc(h.doc).title.to_string()).collect()
+        search(ix, q, 9)
+            .iter()
+            .map(|h| ix.doc(h.doc).title.to_string())
+            .collect()
     }
 
     fn sample() -> (tempdir::Dir, Index) {
@@ -401,7 +446,11 @@ mod tests {
             ("cream", "", "thick yellow white liquid from milk"),
             ("Café", "cafes", "a small restaurant serving coffee"),
             ("extraordinary", "", "very unusual or remarkable"),
-            ("zebra", "", "an african animal with black and white stripes"),
+            (
+                "zebra",
+                "",
+                "an african animal with black and white stripes",
+            ),
         ])
     }
 
@@ -411,7 +460,10 @@ mod tests {
         let t = titles(&ix, "run");
         assert_eq!(t[0], "run");
         assert!(t.contains(&"runner".to_string()) && t.contains(&"run-up".to_string()));
-        assert!(t.iter().position(|x| x == "runner").unwrap() < t.iter().position(|x| x == "run-up").unwrap());
+        assert!(
+            t.iter().position(|x| x == "runner").unwrap()
+                < t.iter().position(|x| x == "run-up").unwrap()
+        );
     }
 
     #[test]
@@ -455,6 +507,23 @@ mod tests {
         let (_d, ix) = sample();
         assert!(titles(&ix, "qqqqq").is_empty());
         assert!(titles(&ix, "   ").is_empty());
+    }
+
+    #[test]
+    fn untitled_entries_are_not_results() {
+        let (_d, ix) = build(&[("", "", "to be or not to be preface"), ("be", "", "verb")]);
+        assert_eq!(titles(&ix, "to be or not to be"), Vec::<String>::new());
+        assert_eq!(titles(&ix, "be"), vec!["be"]);
+    }
+
+    #[test]
+    fn long_queries_use_only_the_first_words() {
+        let (_d, ix) = build(&[("be", "", "verb")]);
+        let twelve = ["be"; MAX_QUERY_WORDS].join(" ");
+        assert_eq!(titles(&ix, &twelve), vec!["be"]);
+        let long = format!("{twelve} zzzzz yyyyy");
+        assert_eq!(query_tokens(&long).len(), MAX_QUERY_WORDS);
+        assert_eq!(titles(&ix, &long), vec!["be"]);
     }
 
     #[test]

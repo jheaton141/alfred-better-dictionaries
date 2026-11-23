@@ -33,20 +33,38 @@ fn default_data_dir(wf_dir: &str) -> Result<String> {
         return Ok(d);
     }
     let info = plist::Value::from_file(format!("{wf_dir}/info.plist"))?;
-    let id = info.as_dictionary().and_then(|d| d.get("bundleid")).and_then(|v| v.as_string()).context("bundleid")?.to_string();
+    let id = info
+        .as_dictionary()
+        .and_then(|d| d.get("bundleid"))
+        .and_then(|v| v.as_string())
+        .context("bundleid")?
+        .to_string();
     let home = std::env::var("HOME")?;
-    Ok(format!("{home}/Library/Application Support/Alfred/Workflow Data/{id}"))
+    Ok(format!(
+        "{home}/Library/Application Support/Alfred/Workflow Data/{id}"
+    ))
 }
 
 fn dict_id(info: &plist::Dictionary) -> String {
-    let id = info.get("CFBundleIdentifier").and_then(|v| v.as_string()).unwrap_or("dict");
-    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect()
+    let id = info
+        .get("CFBundleIdentifier")
+        .and_then(|v| v.as_string())
+        .unwrap_or("dict");
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn dict_name(info: &plist::Dictionary) -> String {
     ["CFBundleDisplayName", "CFBundleName", "CFBundleIdentifier"]
         .iter()
-        .find_map(|k| info.get(*k).and_then(|v| v.as_string()))
+        .find_map(|k| info.get(k).and_then(|v| v.as_string()))
         .unwrap_or("Dictionary")
         .to_string()
 }
@@ -58,9 +76,12 @@ fn dict_info(dict_path: &str) -> Result<plist::Dictionary> {
 }
 
 fn body_path(dict_path: &str) -> Option<String> {
-    [format!("{dict_path}/Contents/Resources/Body.data"), format!("{dict_path}/Contents/Body.data")]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
+    [
+        format!("{dict_path}/Contents/Resources/Body.data"),
+        format!("{dict_path}/Contents/Body.data"),
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).exists())
 }
 
 fn all_dict_paths() -> Vec<String> {
@@ -107,7 +128,9 @@ fn group_by_word(defs: Vec<String>) -> Vec<(String, Vec<String>)> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<(String, Vec<String>)> = vec![];
     for defn in defs {
-        let Some(c) = re.captures(&defn) else { continue };
+        let Some(c) = re.captures(&defn) else {
+            continue;
+        };
         let word = c[1].to_string();
         let i = *index.entry(word.clone()).or_insert_with(|| {
             out.push((word.clone(), vec![]));
@@ -119,7 +142,9 @@ fn group_by_word(defs: Vec<String>) -> Vec<(String, Vec<String>)> {
 }
 
 fn gzip(data: &[u8]) -> Vec<u8> {
-    let mut e = flate2::GzBuilder::new().mtime(0).write(Vec::new(), flate2::Compression::best());
+    let mut e = flate2::GzBuilder::new()
+        .mtime(0)
+        .write(Vec::new(), flate2::Compression::best());
     e.write_all(data).unwrap();
     e.finish().unwrap()
 }
@@ -133,7 +158,12 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
     let entries: Vec<Entry> = words
         .into_iter()
         .filter(|(w, _)| !w.is_empty())
-        .flat_map(|(word, defs)| defs.into_iter().map(move |defn| Entry { word: word.clone(), defn }))
+        .flat_map(|(word, defs)| {
+            defs.into_iter().map(move |defn| Entry {
+                word: word.clone(),
+                defn,
+            })
+        })
         .collect();
     let total = entries.len();
 
@@ -161,7 +191,12 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
         let built: Vec<(Vec<u8>, item::Prepared)> = group
             .par_iter()
             .zip(names_slice.par_iter())
-            .map(|(e, name)| (gzip(e.defn.as_bytes()), item::prepare(&sel, &e.word, name, &e.defn)))
+            .map(|(e, name)| {
+                (
+                    gzip(e.defn.as_bytes()),
+                    item::prepare(&sel, &e.word, name, &e.defn),
+                )
+            })
             .collect();
         for (blob, mut p) in built {
             p.rec.off = offset;
@@ -200,10 +235,14 @@ fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
         while pos < buf.len() && chunk.len() < 2000 {
             let mut dec = flate2::bufread::GzDecoder::new(&buf[pos..]);
             let mut raw = Vec::new();
-            dec.read_to_end(&mut raw).with_context(|| format!("corrupt member at byte {pos} of {pack_path}"))?;
+            dec.read_to_end(&mut raw)
+                .with_context(|| format!("corrupt member at byte {pos} of {pack_path}"))?;
             let consumed = buf.len() - pos - dec.into_inner().len();
             let defn = String::from_utf8_lossy(&raw).into_owned();
-            let word = title_re.captures(&defn).map(|c| c[1].to_string()).unwrap_or_default();
+            let word = title_re
+                .captures(&defn)
+                .map(|c| c[1].to_string())
+                .unwrap_or_default();
             let n = counters.entry(word.clone()).or_insert(0);
             let name = format!("{}.html", item::base16(&format!("{word}{n}")));
             *n += 1;
@@ -242,10 +281,15 @@ fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
     let fallback = wf.new_fallback(name, &format!("search {name}"));
     let sf = wf.new_script_filter(
         &format!("search {name}"),
-        &format!("open -g ./AlfredExtraPane.app\n\nquery=\"$1\"\n\n./search.sh \"$query\" \"{id}\""),
+        &format!(
+            "open -g ./AlfredExtraPane.app\n\nquery=\"$1\"\n\n./search.sh \"$query\" \"{id}\""
+        ),
         name,
     );
-    let label = |wf: &Graph, l: &str| wf.uid_with_label(l).with_context(|| format!("workflow object '{l}' not found"));
+    let label = |wf: &Graph, l: &str| {
+        wf.uid_with_label(l)
+            .with_context(|| format!("workflow object '{l}' not found"))
+    };
     let router = label(&wf, "router")?;
     let (router_out, rows) = wf.add_router_output(&router, id)?;
     let ipa = label(&wf, "Play pronunciation audio")?;
@@ -283,28 +327,50 @@ fn cmd_import(dict_path: &str, data_dir: &str) -> Result<()> {
     let name = dict_name(&info);
     let body = body_path(dict_path).context("no Body.data in dictionary")?;
 
-    ui::notify(data_dir, &format!("Importing {name}"), "reading dictionary…");
+    ui::notify(
+        data_dir,
+        &format!("Importing {name}"),
+        "reading dictionary…",
+    );
     let words = group_by_word(appledict::definitions(&body)?);
     let n = pack_and_index(data_dir, &id, words)?;
 
     let mut imported = read_imported(data_dir);
-    if imported["items"].as_array().is_some_and(|a| a.iter().any(|i| i["arg"] == id.as_str())) {
-        ui::notify(data_dir, &format!("Re-imported {name}"), &format!("{n} entries (already in the workflow)"));
+    if imported["items"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|i| i["arg"] == id.as_str()))
+    {
+        ui::notify(
+            data_dir,
+            &format!("Re-imported {name}"),
+            &format!("{n} entries (already in the workflow)"),
+        );
         return Ok(());
     }
-    imported["items"].as_array_mut().unwrap().push(json!({"title": name, "arg": id}));
+    imported["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"title": name, "arg": id}));
     create_workflow_objects(&wf_dir, &name, &id)?;
     let tmp = format!("{data_dir}/imported.json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&imported)?)?;
     std::fs::rename(&tmp, format!("{data_dir}/imported.json"))?;
-    ui::notify(data_dir, &format!("Imported {name}"), &format!("{n} entries"));
+    ui::notify(
+        data_dir,
+        &format!("Imported {name}"),
+        &format!("{n} entries"),
+    );
     Ok(())
 }
 
 fn cmd_list_unimported(data_dir: &str) -> Result<()> {
     let imported: Vec<String> = read_imported(data_dir)["items"]
         .as_array()
-        .map(|a| a.iter().filter_map(|i| i["title"].as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i["title"].as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let mut items = vec![];
     for p in all_dict_paths() {
@@ -318,7 +384,10 @@ fn cmd_list_unimported(data_dir: &str) -> Result<()> {
             Err(e) => eprintln!("Unable to process \"{p}\": {e}"),
         }
     }
-    println!("{}", serde_json::to_string_pretty(&json!({"items": items}))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({"items": items}))?
+    );
     Ok(())
 }
 
@@ -349,7 +418,10 @@ fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
 /// layout or from the Meilisearch-era pack (no re-import from Apple's files).
 fn cmd_migrate(data_dir: &str, keep_backup: bool) -> Result<()> {
     let _ = std::fs::remove_file(format!("{data_dir}/migrate.failed"));
-    std::fs::write(format!("{data_dir}/migrate.lock"), std::process::id().to_string())?; // child already holds it when spawned by lookup
+    std::fs::write(
+        format!("{data_dir}/migrate.lock"),
+        std::process::id().to_string(),
+    )?; // child already holds it when spawned by lookup
     let r = migrate_inner(data_dir, keep_backup);
     let _ = std::fs::remove_file(format!("{data_dir}/migrate.lock"));
     match &r {
@@ -366,7 +438,14 @@ fn cmd_migrate(data_dir: &str, keep_backup: bool) -> Result<()> {
 fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
     let wf_dir = workflow_dir();
     let imported = read_imported(data_dir);
-    let ids: Vec<String> = imported["items"].as_array().map(|a| a.iter().filter_map(|i| i["arg"].as_str().map(String::from)).collect()).unwrap_or_default();
+    let ids: Vec<String> = imported["items"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i["arg"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut done_any = false;
     for id in &ids {
         if lookup::index_ok(data_dir, id) {
@@ -396,7 +475,10 @@ fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
         println!("Nothing to migrate.");
     }
     // The old Meilisearch server and its database are no longer used.
-    let _ = std::process::Command::new("pkill").args(["-x", "alfred-dict-server"]).stderr(std::process::Stdio::null()).status();
+    let _ = std::process::Command::new("pkill")
+        .args(["-x", "alfred-dict-server"])
+        .stderr(std::process::Stdio::null())
+        .status();
     let _ = std::fs::remove_file(format!("{data_dir}/server.pid"));
     if !keep_backup {
         for d in ["db", "db.new", "db.premigrate"] {
@@ -415,7 +497,10 @@ fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
 fn cmd_factory_reset(data_dir: &str) -> Result<()> {
     let wf = workflow_dir();
     let home = std::env::var("HOME").unwrap_or_default();
-    if data_dir.len() < 10 || data_dir == home || !data_dir.contains("Workflow Data") && std::env::var("alfred_workflow_data").is_err() {
+    if data_dir.len() < 10
+        || data_dir == home
+        || !data_dir.contains("Workflow Data") && std::env::var("alfred_workflow_data").is_err()
+    {
         bail!("refusing to delete suspicious data folder {data_dir:?}");
     }
     if !Path::new(&format!("{wf}/info.plist.orig")).exists() {

@@ -51,7 +51,7 @@ jobs:
           ! ls /tmp/wf | grep -E 'uv|pyapp|\.py$'
           # empty-data lookup prints valid Alfred JSON
           mkdir -p /tmp/wfdata
-          alfred_workflow_data=/tmp/wfdata BD_WORKFLOW_DIR=/tmp/wf /tmp/wf/bd lookup "" | python3 -c 'import json,sys; assert json.load(sys.stdin)["items"]'
+          alfred_workflow_data=/tmp/wfdata BD_WORKFLOW_DIR=/tmp/wf /tmp/wf/bd lookup "" | plutil -extract items.0 json -o - -
       - uses: actions/upload-artifact@v4
         with:
           name: workflow
