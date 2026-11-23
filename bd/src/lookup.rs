@@ -356,24 +356,23 @@ impl Scope {
     }
 }
 
-/// Split a leading `d:`/`dict:` (dictionary only) or `t:`/`thes:` (thesaurus only) off the query.
+/// Split a leading scope word and colon off the query: `d:`/`dict:`/`dictionary:` (dictionary
+/// only) or `t:`/`thes:`/`thesaurus:` (thesaurus only), any case, spaces around the colon allowed.
 fn parse_scope(query: &str) -> (Scope, &str) {
     let q = query.trim();
-    for (prefix, scope) in [
-        ("dict:", Scope::Dictionary),
-        ("d:", Scope::Dictionary),
-        ("thes:", Scope::Thesaurus),
-        ("t:", Scope::Thesaurus),
-    ] {
-        if let Some(rest) = q
-            .get(..prefix.len())
-            .filter(|h| h.eq_ignore_ascii_case(prefix))
-        {
-            let _ = rest;
-            return (scope, q[prefix.len()..].trim());
-        }
-    }
-    (Scope::All, q)
+    let word_end = q
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(q.len());
+    let rest = q[word_end..].trim_start();
+    let Some(rest) = rest.strip_prefix(':') else {
+        return (Scope::All, q);
+    };
+    let scope = match q[..word_end].to_ascii_lowercase().as_str() {
+        "d" | "dict" | "dictionary" => Scope::Dictionary,
+        "t" | "thes" | "thesaurus" => Scope::Thesaurus,
+        _ => return (Scope::All, q),
+    };
+    (scope, rest.trim())
 }
 
 /// True if a setup job was started within the last minute (covers a crash that left no marker).
@@ -452,6 +451,13 @@ mod scope_tests {
         assert_eq!(parse_scope("d:"), (Scope::Dictionary, ""));
         assert_eq!(parse_scope("döner"), (Scope::All, "döner"));
         assert_eq!(parse_scope("t"), (Scope::All, "t"));
+        assert_eq!(parse_scope("dict: happy"), (Scope::Dictionary, "happy"));
+        assert_eq!(
+            parse_scope("Dictionary : happy"),
+            (Scope::Dictionary, "happy")
+        );
+        assert_eq!(parse_scope("thesaurus:happy"), (Scope::Thesaurus, "happy"));
+        assert_eq!(parse_scope("dic: happy"), (Scope::All, "dic: happy"));
     }
 
     #[test]

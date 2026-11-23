@@ -33,7 +33,7 @@ Better search and live previews for built-in macOS dictionaries.
 
 ### Rebuilt in Rust
 This fork replaces the original Python + Meilisearch backend with `bd`, a
-single native Rust binary (v0.8.0, source in `bd/`). The workflow's look and
+single native Rust binary (v0.8.1, source in `bd/`). The workflow's look and
 features are unchanged; what changed is everything underneath.
 
 Measured head-to-head against the original
@@ -86,9 +86,15 @@ thesaurus in the background (a few seconds) and searches them together as
 one. Nothing to choose or import. Each result is tagged with the book it
 came from, and `⌘↩` plays the pronunciation.
 
-To search only one kind, start the query with `d:` (dictionary only) or
-`t:` (thesaurus only): `lookup t: happy` lists synonyms, `lookup d: happy`
-only definitions. Third-party dictionaries count as dictionaries.
+To search only one kind of book, start the query with a prefix:
+
+| Type | Searches |
+|---|---|
+| `lookup happy` | dictionary and thesaurus together |
+| `lookup d: happy` | dictionaries only (also `dict:` or `dictionary:`) |
+| `lookup t: happy` | thesauri only (also `thes:` or `thesaurus:`) |
+
+Third-party dictionaries count as dictionaries.
 
 ### Adding a third-party dictionary
 Type `.dict-import` and pick a dictionary installed on your Mac (for

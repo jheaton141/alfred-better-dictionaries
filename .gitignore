@@ -13,3 +13,4 @@ jq
 wfbuild
 AlfredExtraPane.app
 bd/target
+.DS_Store
