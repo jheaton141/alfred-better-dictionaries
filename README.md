@@ -27,12 +27,13 @@ Better search and live previews for built-in macOS dictionaries.
    origin, they are showed as diffrent entries
    (in the above example, see "arm" has two entries at the top) 
 
- - Import any compatible dictionary
+ - Dictionary and thesaurus set up automatically; add any compatible
+   third-party dictionary
 
 
 ### Rebuilt in Rust
 This fork replaces the original Python + Meilisearch backend with `bd`, a
-single native Rust binary (v0.6.0, source in `bd/`). The workflow's look and
+single native Rust binary (v0.7.0, source in `bd/`). The workflow's look and
 features are unchanged; what changed is everything underneath.
 
 Measured head-to-head against the original
@@ -78,53 +79,29 @@ questions ("where do babies come from") still return only loose matches.
 Credit: the workflow design, UI and idea are
 [mr-pennyworth's](https://github.com/mr-pennyworth/alfred-better-dictionaries).
 
-### Importing a Dictionary
-After importing the workflow, type `.dict-import` into Alfred.
-![](images/import-any.png)
-Select the dictionary you want to import.  
+### Getting started
+Import the workflow and type `lookup` followed by a word. The first time,
+the workflow sets itself up: it imports macOS's built-in dictionary and
+thesaurus in the background (a few seconds) and searches them together as
+one. Nothing to choose or import. Each result is tagged with the book it
+came from, and `⌘↩` plays the pronunciation.
 
+### Adding a third-party dictionary
+Type `.dict-import` and pick a dictionary installed on your Mac (for
+example one added in Dictionary.app). It is added to the same `lookup`
+search, and also gets its own keyword and hotkey, which you can assign in
+the workflow editor to search only that dictionary.
 
-### Dictionary-specific Keywords and Hotkeys
-After a dictionary is imported, a script filter and a hotkey trigger
-is automatically created into the workflow editor.  
-
- - Freshly-installed workflow without any imported dictionaries:
-   ![](images/before-import.png)
-
- - Two hotkeys and keyword triggers each automatically added after importing
-   two dictionaries. They come pre-labeled with dictionary names:
-   ![](images/after-import.png)
-
- - This allows you to assign hotkeys and keywords for specific dictionaries.
-   For example, below you can see how I have manually assigned keywords
-   `thesaurus` and `defn` to the thesaurus and dictionary respectively.
-   In addition, I can trigger the dictionary search using `⌃⌥⌘D`.  
-   ![](images/example-assignment.png)
-
-
-### Word Lookup
-You can use the hotkeys/keywords created above for directly searhcing
-specific dictionaries. That's the recommended way for dictionaries
-that you use frequently.
-
-For the infrequently used dictionaries for which you haven't assigned
-any hotkeys/keywords, follow this:
- 1. Type `lookup` into Alfred. You'll see a list of all dictionaries
-    imported into BetterDict.
-    ![](images/lookup-imported.png)
- 2. Select the dictionary (or press `⇥` to autocomplete it), and keep
-    typing the search query in the same Alfred window, e.g.
-    `lookup Oxford arm`.
+`.dict-factory-reset` removes everything imported; the next `lookup` sets
+the built-in dictionary and thesaurus up again.
 
 
 ### Notes and Warnings
  - Everything is done by `bd`, a single native Rust binary (source in
    `bd/`): importing, the search index and the lookups themselves. No
-   Python, no virtual environment, no search server, no first-run download.
+   Python, no virtual environment, no search server, no download.
    The workflow is just `bd`, a few tiny shell scripts and the extra pane.
    Apple Silicon only.
-
- - Importing a dictionary takes a minute or two on Apple Silicon.
 
  - Searches take a few milliseconds: the index is a single file per
    dictionary that is memory-mapped on demand. Results are ranked: exact
@@ -132,6 +109,9 @@ any hotkeys/keywords, follow this:
    and words, then typos, then the words of the definition itself.
 
  - Works with Alfred 5 and 6.
+
+ - The first-run setup needs the dictionaries to be downloaded in
+   Dictionary.app (Settings). If they are missing, `lookup` says so.
 
  - Definitions are stored in one compressed pack file per dictionary
    (`<dict>/defs.pack`) next to its search index (`<dict>/index.bin`); the

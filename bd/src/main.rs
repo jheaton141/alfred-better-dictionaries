@@ -320,7 +320,8 @@ fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
 
 // ----------------------------------------------------------------- commands
 
-fn cmd_import(dict_path: &str, data_dir: &str) -> Result<()> {
+/// Import one dictionary; `objects` also gives it its own keyword and hotkey in the workflow.
+fn cmd_import(dict_path: &str, data_dir: &str, objects: bool) -> Result<()> {
     let wf_dir = workflow_dir();
     let info = dict_info(dict_path)?;
     let id = dict_id(&info);
@@ -351,7 +352,9 @@ fn cmd_import(dict_path: &str, data_dir: &str) -> Result<()> {
         .as_array_mut()
         .unwrap()
         .push(json!({"title": name, "arg": id}));
-    create_workflow_objects(&wf_dir, &name, &id)?;
+    if objects {
+        create_workflow_objects(&wf_dir, &name, &id)?;
+    }
     let tmp = format!("{data_dir}/imported.json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&imported)?)?;
     std::fs::rename(&tmp, format!("{data_dir}/imported.json"))?;
@@ -387,6 +390,65 @@ fn cmd_list_unimported(data_dir: &str) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({"items": items}))?
+    );
+    Ok(())
+}
+
+/// Apple's own English dictionaries and thesauri (US and UK), imported automatically.
+fn is_builtin(id: &str) -> bool {
+    ["NOAD", "OAWT", "ODE", "OTE"]
+        .iter()
+        .any(|s| id == format!("com-apple-dictionary-{s}"))
+}
+
+/// Paths of the built-in dictionaries found on this Mac, one per dictionary.
+fn builtin_dict_paths() -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    all_dict_paths()
+        .into_iter()
+        .filter_map(|p| {
+            let id = dict_id(&dict_info(&p).ok()?);
+            (is_builtin(&id) && seen.insert(id.clone())).then_some((p, id))
+        })
+        .collect()
+}
+
+/// First-run import of the built-in dictionary and thesaurus; no workflow objects.
+fn cmd_setup(data_dir: &str) -> Result<()> {
+    let _ = std::fs::remove_file(format!("{data_dir}/setup.failed"));
+    std::fs::write(
+        format!("{data_dir}/setup.lock"),
+        std::process::id().to_string(),
+    )?; // the spawning lookup already holds it
+    let r = setup_inner(data_dir);
+    let _ = std::fs::remove_file(format!("{data_dir}/setup.lock"));
+    if let Err(e) = &r {
+        ui::log_line(data_dir, &format!("SETUP ERROR: {e:?}"));
+        let _ = std::fs::write(format!("{data_dir}/setup.failed"), format!("{e}"));
+        ui::notify(data_dir, "Setup failed", &format!("{e}"));
+    }
+    r
+}
+
+fn setup_inner(data_dir: &str) -> Result<()> {
+    let found = builtin_dict_paths();
+    if found.is_empty() {
+        bail!("No built-in dictionary found. Open Dictionary.app > Settings and tick New Oxford American Dictionary and the Thesaurus, then try again (or .dict-import another)");
+    }
+    let mut failed = vec![];
+    for (path, id) in &found {
+        if let Err(e) = cmd_import(path, data_dir, false) {
+            ui::log_line(data_dir, &format!("ERROR importing {id}: {e:?}"));
+            failed.push(format!("{id}: {e}"));
+        }
+    }
+    if failed.len() == found.len() {
+        bail!("{}", failed.join("; "));
+    }
+    ui::notify(
+        data_dir,
+        "Dictionary and thesaurus ready",
+        "just type: lookup <word>",
     );
     Ok(())
 }
@@ -532,7 +594,7 @@ fn run() -> Result<()> {
             let dict = args.get(1).context("usage: bd import <dict_path> [data_dir]")?;
             let data = data_arg(2)?;
             ui::log_line(&data, &format!("\n=== import {dict}  (bd {}, workflow_dir={wf_dir})", env!("CARGO_PKG_VERSION")));
-            match cmd_import(dict, &data) {
+            match cmd_import(dict, &data, true) {
                 Ok(()) => ui::log_line(&data, "OK: import finished"),
                 Err(e) => {
                     ui::log_line(&data, &format!("ERROR: {e:?}"));
@@ -544,6 +606,7 @@ fn run() -> Result<()> {
         }
         "list-unimported" => cmd_list_unimported(&data_arg(1)?),
         "migrate" => cmd_migrate(&data_arg(1)?, keep_backup),
+        "setup" => cmd_setup(&data_arg(1)?),
         "search" => {
             // bd search <dict_id> <query>
             let id = args.get(1).context("usage: bd search <dict_id> <query>")?;
@@ -587,7 +650,7 @@ fn run() -> Result<()> {
             println!("bd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => bail!("usage: bd <import|search|lookup|list-unimported|migrate|factory-reset|package|upgrade|say-ipa|version> ..."),
+        _ => bail!("usage: bd <import|search|lookup|setup|list-unimported|migrate|factory-reset|package|upgrade|say-ipa|version> ..."),
     }
 }
 
@@ -601,6 +664,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_apples_own_dictionaries_are_builtin() {
+        assert!(is_builtin("com-apple-dictionary-NOAD"));
+        assert!(is_builtin("com-apple-dictionary-OAWT"));
+        assert!(!is_builtin("com-apple-dictionary-Wikipedia"));
+        assert!(!is_builtin("com-apple-dictionary-NOAD-extra"));
+    }
 
     #[test]
     fn legacy_html_dir_preserves_body_whitespace() {

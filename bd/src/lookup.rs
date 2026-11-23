@@ -179,8 +179,9 @@ fn pid_alive(pid: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn migration_running(data_dir: &str) -> bool {
-    let lock = format!("{data_dir}/migrate.lock");
+/// True while a detached `bd <job>` (migrate, setup) holds its lock file.
+pub fn job_running(data_dir: &str, job: &str) -> bool {
+    let lock = format!("{data_dir}/{job}.lock");
     let Ok(pid) = std::fs::read_to_string(&lock) else {
         return false;
     };
@@ -195,14 +196,14 @@ pub fn migration_running(data_dir: &str) -> bool {
     pid_alive(pid.trim())
 }
 
-/// Start `bd migrate` detached from this (short-lived) script-filter process.
-fn spawn_migration(data_dir: &str) {
+/// Start `bd <job> <data_dir>` detached from this (short-lived) script-filter process.
+fn spawn_job(data_dir: &str, job: &str) {
     use std::os::unix::process::CommandExt;
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    // Take the lock atomically so keystroke-by-keystroke lookups start only one migration.
-    let lock = format!("{data_dir}/migrate.lock");
+    // Take the lock atomically so keystroke-by-keystroke lookups start only one job.
+    let lock = format!("{data_dir}/{job}.lock");
     let claim = || {
         std::fs::OpenOptions::new()
             .write(true)
@@ -211,7 +212,7 @@ fn spawn_migration(data_dir: &str) {
     };
     let mut f = match claim() {
         Ok(f) => f,
-        Err(_) if migration_running(data_dir) => return,
+        Err(_) if job_running(data_dir, job) => return,
         Err(_) => {
             let _ = std::fs::remove_file(&lock); // stale: its process is gone
             match claim() {
@@ -225,7 +226,7 @@ fn spawn_migration(data_dir: &str) {
         .append(true)
         .open(format!("{data_dir}/import.log"));
     let mut c = Command::new(exe);
-    c.args(["migrate", data_dir])
+    c.args([job, data_dir])
         .stdin(Stdio::null())
         .process_group(0);
     match log {
@@ -243,10 +244,8 @@ fn spawn_migration(data_dir: &str) {
     }
 }
 
-/// The single `lookup` script filter:
-///   "word"              -> every dictionary, merged by relevance
-///   "<Dictionary> word" -> only that dictionary
-///   ""                  -> hint + list of dictionaries (to scope a search)
+/// The single `lookup` script filter: every imported dictionary, merged by
+/// relevance. The first run imports the built-in dictionary and thesaurus.
 pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
     let imported: Value = std::fs::read_to_string(format!("{data_dir}/imported.json"))
         .ok()
@@ -265,11 +264,23 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
+    let setting_up = || {
+        let mut v = message(
+            "Setting up the dictionary and thesaurus (first run)…",
+            "This takes a few seconds; results appear automatically",
+        );
+        v["rerun"] = json!(1);
+        v
+    };
+    if job_running(data_dir, "setup") {
+        return Ok(setting_up());
+    }
     if dicts.is_empty() {
-        return Ok(message(
-            "No dictionaries imported yet",
-            "Type .dict-import to import one",
-        ));
+        if let Some(why) = recent_setup_failure(data_dir) {
+            return Ok(message("Couldn't set up the built-in dictionaries", &why));
+        }
+        spawn_job(data_dir, "setup");
+        return Ok(setting_up());
     }
 
     // Dictionaries imported by older versions need their index built once.
@@ -288,7 +299,7 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
                 &format!("See import.log in the workflow data folder. {}", why.trim()),
             ));
         }
-        spawn_migration(data_dir);
+        spawn_job(data_dir, "migrate");
         let mut v = message(
             "Upgrading your dictionaries (one time)…",
             "Searching is available again when it finishes; progress is in the notifications",
@@ -297,45 +308,32 @@ pub fn lookup(data_dir: &str, wf_dir: &str, query: &str) -> Result<Value> {
         return Ok(v);
     }
 
-    let lq = query.to_lowercase();
-    let scoped = dicts
-        .iter()
-        .filter(|d| lq.starts_with(&format!("{} ", d.0.to_lowercase())))
-        .max_by_key(|d| d.0.chars().count())
-        .or(if dicts.len() == 1 && !query.is_empty() {
-            dicts.first()
-        } else {
-            None
-        });
+    if query.trim().is_empty() {
+        return Ok(message(
+            "Look up a word",
+            "Type a word to search the dictionary and thesaurus",
+        ));
+    }
+    open_extra_pane(wf_dir);
+    search_all(data_dir, &dicts, query)
+}
 
-    if let Some((title, id)) = scoped {
-        let word: String = if lq.starts_with(&format!("{} ", title.to_lowercase())) {
-            query
-                .chars()
-                .skip(title.chars().count() + 1)
-                .collect::<String>()
-                .trim_start()
-                .to_string()
-        } else {
-            query.to_string()
-        };
-        if word.is_empty() {
-            return Ok(message(&format!("Search {title}…"), "Type a word"));
-        }
-        open_extra_pane(wf_dir);
-        return search_dict(data_dir, id, &word);
+/// Why the last automatic setup failed, if it did within the last minute (so a
+/// fixed problem is retried soon, but keystrokes don't respawn the job).
+fn recent_setup_failure(data_dir: &str) -> Option<String> {
+    let p = format!("{data_dir}/setup.failed");
+    let fresh = std::fs::metadata(&p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|e| e.as_secs() < 60);
+    if fresh {
+        std::fs::read_to_string(&p)
+            .ok()
+            .map(|t| t.trim().to_string())
+    } else {
+        None
     }
-    if !query.is_empty() {
-        open_extra_pane(wf_dir);
-        return search_all(data_dir, &dicts, query);
-    }
-    let mut items = vec![
-        json!({"title": "Search all dictionaries…", "subtitle": "Just type a word, or pick one dictionary below", "valid": false}),
-    ];
-    for (title, _) in &dicts {
-        items.push(json!({"title": title, "subtitle": format!("Search only {title}"), "autocomplete": format!("{title} "), "valid": false}));
-    }
-    Ok(json!({ "items": items }))
 }
 
 /// Drop cached HTML not touched for a week (regenerated on demand). Cheap

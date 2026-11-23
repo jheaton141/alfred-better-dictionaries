@@ -333,7 +333,7 @@
 				<key>scriptfile</key>
 				<string></string>
 				<key>subtext</key>
-				<string>keyword: 'lookup' — pick a dictionary, then type a word</string>
+				<string>keyword: 'lookup' — type a word (dictionary and thesaurus are set up automatically)</string>
 				<key>title</key>
 				<string>Look a word up in a BetterDictionary</string>
 				<key>type</key>
@@ -555,7 +555,7 @@ mkdir -p "$alfred_workflow_data"
 				<key>subtext</key>
 				<string>keyword: '.dict-import'</string>
 				<key>title</key>
-				<string>Import a dictionary into BetterDictionary</string>
+				<string>Add a third-party dictionary</string>
 				<key>type</key>
 				<integer>0</integer>
 				<key>withspace</key>
