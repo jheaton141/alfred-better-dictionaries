@@ -432,7 +432,13 @@ fn cmd_setup(data_dir: &str) -> Result<()> {
         // marker first, so a lookup never sees neither the lock nor the marker
         let _ = std::fs::write(format!("{data_dir}/setup.failed"), format!("{e}"));
         ui::log_line(data_dir, &format!("SETUP ERROR: {e:?}"));
-        ui::notify(data_dir, "Setup failed", &format!("{e}"));
+        // a user who already has dictionaries gets no repeated pop-up on each retry
+        if read_imported(data_dir)["items"]
+            .as_array()
+            .is_none_or(|a| a.is_empty())
+        {
+            ui::notify(data_dir, "Setup failed", &format!("{e}"));
+        }
     }
     let _ = std::fs::remove_file(format!("{data_dir}/setup.lock"));
     r

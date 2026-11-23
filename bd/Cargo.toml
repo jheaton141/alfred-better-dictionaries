@@ -1,6 +1,6 @@
 [package]
 name = "bd"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 publish = false
 description = "BetterDict: importer, search index and lookup (replaces the Python pyapp and Meilisearch)"

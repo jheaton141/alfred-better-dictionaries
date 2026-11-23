@@ -33,7 +33,7 @@ Better search and live previews for built-in macOS dictionaries.
 
 ### Rebuilt in Rust
 This fork replaces the original Python + Meilisearch backend with `bd`, a
-single native Rust binary (v0.7.0, source in `bd/`). The workflow's look and
+single native Rust binary (v0.7.1, source in `bd/`). The workflow's look and
 features are unchanged; what changed is everything underneath.
 
 Measured head-to-head against the original
