@@ -142,22 +142,42 @@ pub fn package(repo: &str, out: &str) -> Result<()> {
     Ok(())
 }
 
+/// Alfred preference folders to search, synced location first.
+fn pref_roots(home: &str, synced: Option<&str>) -> Vec<String> {
+    let mut roots = Vec::new();
+    if let Some(s) = synced.map(str::trim).filter(|s| !s.is_empty()) {
+        let s = s.replacen('~', home, 1);
+        roots.push(format!(
+            "{}/Alfred.alfredpreferences",
+            s.trim_end_matches('/')
+        ));
+    }
+    roots.push(format!(
+        "{home}/Library/Application Support/Alfred/Alfred.alfredpreferences"
+    ));
+    roots
+}
+
+/// Alfred 5/6 keep the sync folder in the Alfred-Preferences domain (older builds used Alfred's).
+fn synced_folder() -> Option<String> {
+    [
+        "com.runningwithcrayons.Alfred-Preferences",
+        "com.runningwithcrayons.Alfred",
+    ]
+    .iter()
+    .find_map(|d| {
+        let o = std::process::Command::new("defaults")
+            .args(["read", d, "syncfolder"])
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (o.status.success() && !s.is_empty()).then_some(s)
+    })
+}
+
 fn find_installed() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let mut roots = vec![format!(
-        "{home}/Library/Application Support/Alfred/Alfred.alfredpreferences"
-    )];
-    if let Ok(o) = std::process::Command::new("defaults")
-        .args(["read", "com.runningwithcrayons.Alfred", "syncfolder"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .replacen('~', &home, 1);
-        if !s.is_empty() {
-            roots.insert(0, format!("{s}/Alfred.alfredpreferences"));
-        }
-    }
+    let roots = pref_roots(&home, synced_folder().as_deref());
     for r in roots {
         for e in std::fs::read_dir(format!("{r}/workflows"))
             .into_iter()
@@ -277,4 +297,29 @@ pub fn upgrade(
     }
     println!("Done. Existing dictionaries, keywords and hotkeys are untouched.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pref_roots;
+
+    #[test]
+    fn synced_folder_is_searched_before_the_default() {
+        let r = pref_roots("/Users/me", Some("~/Documents/Personal\n"));
+        assert_eq!(
+            r[0],
+            "/Users/me/Documents/Personal/Alfred.alfredpreferences"
+        );
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn no_sync_folder_falls_back_to_application_support() {
+        let r = pref_roots("/Users/me", None);
+        assert_eq!(
+            r,
+            ["/Users/me/Library/Application Support/Alfred/Alfred.alfredpreferences"]
+        );
+        assert_eq!(pref_roots("/Users/me", Some("  ")), r);
+    }
 }
