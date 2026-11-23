@@ -451,7 +451,7 @@
 }
 
 if [ "$(confirm)" = "1" ]; then
-  killall alfred-dict-server
+  killall -q alfred-dict-server 2>/dev/null || true
   ./setup.sh
   ./bd factory-reset "$alfred_workflow_data"
 fi</string>
@@ -897,7 +897,7 @@ Subsequent searches should be snappy
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.4.0</string>
+	<string>0.5.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/mr-pennyworth/alfred-better-dictionaries</string>
 </dict>

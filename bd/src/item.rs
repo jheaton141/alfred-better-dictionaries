@@ -1,7 +1,6 @@
-//! Build the search document for one definition (same shape as the Python
-//! importer produced, so existing workflows/lookup scripts keep working).
+//! Turn one definition into the fields we index and display.
+use crate::text;
 use scraper::{Html, Selector};
-use serde_json::{json, Value};
 
 pub const SUBTITLE_MAX_CHARS: usize = 300;
 pub const FULLTEXT_MAX_CHARS: usize = 4000;
@@ -37,35 +36,51 @@ impl Sel {
     }
 }
 
-/// `off`/`len` are filled in by the caller once the pack position is known.
-pub fn make_item(sel: &Sel, word: &str, filename: &str, definition: &str, html_path: &str) -> Value {
+/// What the index stores per entry. The subtitle and pronunciation are *not*
+/// stored (they are derived from the definition for the few hits shown).
+#[derive(Clone, Debug, Default)]
+pub struct DocRec {
+    pub title: String,
+    pub forms: String,
+    /// file name of the cached html (`<hex>.html`)
+    pub name: String,
+    /// position of this definition's gzip member in `defs.pack`
+    pub off: u64,
+    pub len: u64,
+}
+
+/// A document ready to be added to the index builder.
+pub struct Prepared {
+    pub rec: DocRec,
+    /// unique, sorted search terms of the (truncated) full text
+    pub full_terms: Vec<String>,
+}
+
+pub fn prepare(sel: &Sel, word: &str, name: &str, definition: &str) -> Prepared {
     let doc = Html::parse_fragment(definition);
-    let fulltext_all = text_of(doc.root_element().text());
-    let mut snippet = fulltext_all.clone();
+    let fulltext = trunc(&text_of(doc.root_element().text()), FULLTEXT_MAX_CHARS);
+    let forms = doc.select(&sel.forms).next().map(|e| text_of(e.text())).unwrap_or_default();
+    let mut full_terms: Vec<String> = text::tokens(&fulltext).into_iter().filter(|t| t.len() <= 40).collect();
+    full_terms.sort_unstable();
+    full_terms.dedup();
+    Prepared { rec: DocRec { title: word.to_string(), forms, name: name.to_string(), off: 0, len: 0 }, full_terms }
+}
+
+/// The result line shown under the title, plus the IPA pronunciation (if any).
+pub fn display(sel: &Sel, definition: &str) -> (String, String) {
+    let doc = Html::parse_fragment(definition);
+    let mut snippet = text_of(doc.root_element().text());
     if let Some(e) = doc.select(&sel.def).next() {
         snippet = text_of(e.text());
     }
     let snippet = trunc(&snippet, SUBTITLE_MAX_CHARS);
-    let fulltext = trunc(&fulltext_all, FULLTEXT_MAX_CHARS);
     let forms = doc.select(&sel.forms).next().map(|e| text_of(e.text())).unwrap_or_default();
-
-    let mut item = json!({
-        "arg": html_path,
-        "title": word,
-        "id": filename.split('.').next().unwrap(),
-        "forms": forms,
-        "subtitle": trunc(&format!("{forms}{snippet}"), SUBTITLE_MAX_CHARS),
-        "fulltext": fulltext,
-        "quicklookurl": html_path,
-    });
-
+    let mut subtitle = trunc(&format!("{forms}{snippet}"), SUBTITLE_MAX_CHARS);
+    let mut pron = String::new();
     let ipa = doc.select(&sel.ipa_solitary).next().or_else(|| doc.select(&sel.ipa).next());
     if let Some(e) = ipa {
-        let t = text_of(e.text());
-        let pron = t.split(',').next().unwrap_or("").to_string();
-        let sub = item["subtitle"].as_str().unwrap().to_string();
-        item["subtitle"] = Value::String(format!("[⌘: 🗣] {sub}"));
-        item["mods"] = json!({"cmd": {"arg": pron, "subtitle": format!("🗣 {pron}")}});
+        pron = text_of(e.text()).split(',').next().unwrap_or("").to_string();
+        subtitle = format!("[⌘: 🗣] {subtitle}");
     }
-    item
+    (subtitle, pron)
 }

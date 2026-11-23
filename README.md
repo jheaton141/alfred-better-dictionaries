@@ -70,48 +70,38 @@ any hotkeys/keywords, follow this:
 
 
 ### Notes and Warnings
- - Importing and migrating are done by `bd`, a single native Rust binary
-   (source in `bd/`). No Python, no virtual environment, no first-run
-   download. (`uv` is only still bundled for the optional IPA audio script.)
+ - Everything is done by `bd`, a single native Rust binary (source in
+   `bd/`): importing, the search index and the lookups themselves. No
+   Python, no virtual environment, no search server, no first-run download.
+   (`uv` is only still bundled for the optional IPA audio script.)
 
- - Importing a dictionary could take as much as 30 minutes
-   on old machines or if there's significant CPU activity from other apps.
+ - Importing a dictionary takes a minute or two on Apple Silicon.
 
- - After each mac restart, for the first time when you run
-   the workflow, expect a comparatively slower search.
-   Subsequent searches should be instant. The search server is started
-   (and its index pre-warmed) the moment you type `lookup` or use any
-   dictionary keyword, so the first real search is usually already warm.
+ - Searches take a few milliseconds: the index is a single file per
+   dictionary that is memory-mapped on demand. Results are ranked: exact
+   title, then inflected forms ("ran" finds *run*), then title prefixes
+   and words, then typos, then the words of the definition itself.
 
- - Works with Alfred 5 and 6. Dictionaries imported with an older version
-   keep working, but re-import them (`.dict-factory-reset`) to get the
-   smaller, faster index described below.
+ - Works with Alfred 5 and 6.
 
  - Definitions are stored in one compressed pack file per dictionary
-   (`<dict>/defs.pack`); the HTML that Alfred previews is generated on
-   demand for the few results shown and cached under `cache/` (pruned after
-   a week of disuse). Together with the slimmer search index this is much
-   smaller than the old one-HTML-file-per-definition layout. Re-import
-   existing dictionaries (`.dict-factory-reset`) to benefit.
+   (`<dict>/defs.pack`) next to its search index (`<dict>/index.bin`); the
+   HTML that Alfred previews is generated on demand for the few results
+   shown and cached under `cache/` (pruned after a week of disuse).
 
 ### Upgrading without re-importing
 Re-importing a newer `.alfredworkflow` over an installed one loses the
 per-dictionary keywords/hotkeys. To upgrade in place instead, quit Alfred
 Preferences and run `python3 upgrade_in_place.py` from a checkout of this
-repo. Your imported dictionaries, keywords, hotkeys and indexes are kept.
+repo. Your imported dictionaries, keywords and hotkeys are kept, and no
+re-import from the macOS dictionary files is needed.
 
 The upgrade needs the `bd` binary (Apple Silicon). Get it from the CI build:
 
     curl -L https://github.com/jheaton141/alfred-better-dictionaries/releases/download/bd-latest/bd-arm64 -o bd-arm64
     python3 upgrade_in_place.py --bd bd-arm64
 
-Add `--migrate` to also convert dictionaries imported with an older version
-to the compact storage layout, without re-importing from the macOS
-dictionary files:
-
-    python3 upgrade_in_place.py --bd bd-arm64 --migrate
-
-Search is unavailable while it runs. The new index is built next to the old
-one and the old data is only deleted once every dictionary has been rebuilt
-(pass `--keep-backup` to keep it; you need free disk space for the new data
-while it runs).
+It builds the new search index from your existing dictionaries (from the
+pack, or from the oldest HTML-folder layout), then deletes the old
+Meilisearch server and database (`--keep-backup` keeps the database; use
+`--no-migrate` to let the first `lookup` do the conversion in the background).

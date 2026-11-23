@@ -7,8 +7,6 @@ fi
 
 set -uo pipefail
 
-chmod +x ./alfred-dict-server
-chmod +x ./jq
 chmod +x ./uv
 chmod +x ./bd
 
@@ -20,8 +18,6 @@ function deQuarantine {
 }
 
 deQuarantine ./AlfredExtraPane.app
-deQuarantine ./alfred-dict-server
-deQuarantine ./jq
 deQuarantine ./uv
 deQuarantine ./bd
 
@@ -30,5 +26,5 @@ mkdir -p "${alfred_workflow_data:-/dev/null}" 2> /dev/null || true
 defaults write com.runningwithcrayons.Alfred experimental.presssecretary -bool YES
 open ./AlfredExtraPane.app
 
-# Kill instances running from previous version of workflow
-killall -q alfred-dict-server || true
+# Stop a search server left over from versions before 0.5 (no longer used)
+killall -q alfred-dict-server 2> /dev/null || true

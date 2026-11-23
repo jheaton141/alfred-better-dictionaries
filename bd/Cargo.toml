@@ -1,8 +1,8 @@
 [package]
 name = "bd"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-description = "BetterDict importer/migrator (replaces the Python pyapp)"
+description = "BetterDict: importer, search index and lookup (replaces the Python pyapp and Meilisearch)"
 
 [dependencies]
 anyhow = "1"
@@ -12,7 +12,8 @@ rayon = "1"
 regex = "1"
 scraper = "0.20"
 serde_json = { version = "1", features = ["preserve_order"] }
-ureq = { version = "2", default-features = false, features = ["json"] }
+memmap2 = "0.9"
+unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 

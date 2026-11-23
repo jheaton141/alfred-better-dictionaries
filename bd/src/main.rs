@@ -1,7 +1,10 @@
 mod appledict;
 mod graph;
+mod index;
 mod item;
-mod meili;
+mod lookup;
+mod query;
+mod text;
 mod ui;
 
 use anyhow::{bail, Context, Result};
@@ -9,7 +12,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Directory holding info.plist, the server binary, etc. (bd lives there).
@@ -119,24 +122,15 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 }
 
 /// Compress every definition into one pack file (one gzip member each) and
-/// push search documents to the index. Returns the number of documents.
-fn pack_and_index(
-    data_dir: &str,
-    id: &str,
-    words: Vec<(String, Vec<String>)>,
-) -> Result<usize> {
-    let wf_dir = workflow_dir();
-    let cache_dir = format!("{data_dir}/cache/{id}");
-    std::fs::create_dir_all(&cache_dir)?;
+/// build the search index. Returns the number of documents.
+fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -> Result<usize> {
     std::fs::create_dir_all(format!("{data_dir}/{id}"))?;
     let pack_path = format!("{data_dir}/{id}/defs.pack");
 
     let entries: Vec<Entry> = words
         .into_iter()
         .filter(|(w, _)| !w.is_empty())
-        .flat_map(|(word, defs)| {
-            defs.into_iter().map(move |defn| Entry { word: word.clone(), defn })
-        })
+        .flat_map(|(word, defs)| defs.into_iter().map(move |defn| Entry { word: word.clone(), defn }))
         .collect();
     let total = entries.len();
 
@@ -153,48 +147,86 @@ fn pack_and_index(
         .collect();
 
     let mut prog = ui::Progress::new(data_dir, "Packing definitions & building index");
-    meili::ensure_server(&wf_dir, data_dir, &format!("{data_dir}/db"))?;
-    meili::create_index(id)?;
-
     let sel = item::Sel::new();
+    let mut builder = index::Builder::new();
     let chunk = 2000;
-    let mut tasks = vec![];
     let mut pack = std::io::BufWriter::new(std::fs::File::create(&pack_path)?);
     let mut offset: u64 = 0;
     let mut done = 0;
     for (ci, group) in entries.chunks(chunk).enumerate() {
         let names_slice = &names[ci * chunk..ci * chunk + group.len()];
-        let built: Vec<(Vec<u8>, Value)> = group
+        let built: Vec<(Vec<u8>, item::Prepared)> = group
             .par_iter()
             .zip(names_slice.par_iter())
-            .map(|(e, name)| {
-                let html_path = format!("{cache_dir}/{name}");
-                let blob = gzip(e.defn.as_bytes());
-                let it = item::make_item(&sel, &e.word, name, &e.defn, &html_path);
-                (blob, it)
-            })
+            .map(|(e, name)| (gzip(e.defn.as_bytes()), item::prepare(&sel, &e.word, name, &e.defn)))
             .collect();
-        let mut docs = Vec::with_capacity(built.len());
-        for (blob, mut it) in built {
-            it["off"] = json!(offset);
-            it["len"] = json!(blob.len());
+        for (blob, mut p) in built {
+            p.rec.off = offset;
+            p.rec.len = blob.len() as u64;
             pack.write_all(&blob)?;
             offset += blob.len() as u64;
-            docs.push(it);
+            builder.add(&p);
         }
-        tasks.push(meili::add_documents(id, &docs)?);
         done += group.len();
         prog.update(done, total, &group[group.len() - 1].word);
     }
     pack.flush()?;
     drop(pack);
 
-    ui::notify(data_dir, "Building index for instant search", "waiting for the index to finish…");
-    for t in tasks {
-        meili::wait_task(t, false)?;
-    }
+    ui::notify(data_dir, "Writing the search index", "almost done…");
+    builder.finish(&lookup::index_path(data_dir, id))?;
     prog.done();
     Ok(total)
+}
+
+/// Rebuild only the search index of a dictionary from its existing pack
+/// (the pack alone holds every definition, in import order).
+fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
+    let pack_path = format!("{data_dir}/{id}/defs.pack");
+    let buf = std::fs::read(&pack_path).with_context(|| format!("reading {pack_path}"))?;
+    let title_re = Regex::new(r#"d:title="(.*?)""#).unwrap();
+    let sel = item::Sel::new();
+    let mut builder = index::Builder::new();
+    let mut counters: HashMap<String, usize> = HashMap::new();
+    let mut prog = ui::Progress::new(data_dir, &format!("Building search index ({id})"));
+    let mut pos = 0usize;
+    let mut last_word = String::new();
+    while pos < buf.len() {
+        // decode up to 2000 members, remembering where each one sits
+        let mut chunk: Vec<(u64, u64, String, String, String)> = vec![];
+        while pos < buf.len() && chunk.len() < 2000 {
+            let mut dec = flate2::bufread::GzDecoder::new(&buf[pos..]);
+            let mut raw = Vec::new();
+            dec.read_to_end(&mut raw).with_context(|| format!("corrupt member at byte {pos} of {pack_path}"))?;
+            let consumed = buf.len() - pos - dec.into_inner().len();
+            let defn = String::from_utf8_lossy(&raw).into_owned();
+            let word = title_re.captures(&defn).map(|c| c[1].to_string()).unwrap_or_default();
+            let n = counters.entry(word.clone()).or_insert(0);
+            let name = format!("{}.html", item::base16(&format!("{word}{n}")));
+            *n += 1;
+            chunk.push((pos as u64, consumed as u64, word, name, defn));
+            pos += consumed;
+        }
+        let built: Vec<item::Prepared> = chunk
+            .par_iter()
+            .map(|(off, len, word, name, defn)| {
+                let mut p = item::prepare(&sel, word, name, defn);
+                p.rec.off = *off;
+                p.rec.len = *len;
+                p
+            })
+            .collect();
+        for p in &built {
+            builder.add(p);
+        }
+        last_word = chunk.last().map(|c| c.2.clone()).unwrap_or_default();
+        prog.update(pos, buf.len(), &last_word);
+    }
+    let _ = last_word;
+    let n = builder.len();
+    builder.finish(&lookup::index_path(data_dir, id))?;
+    prog.done();
+    Ok(n)
 }
 
 // ----------------------------------------------------------- workflow graph
@@ -303,40 +335,69 @@ fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
     Ok(group_by_word(defs))
 }
 
+/// Bring every imported dictionary to the current layout: a pack of
+/// definitions plus the built-in search index. Works from the old HTML-folder
+/// layout or from the Meilisearch-era pack (no re-import from Apple's files).
 fn cmd_migrate(data_dir: &str, keep_backup: bool) -> Result<()> {
+    let _ = std::fs::remove_file(format!("{data_dir}/migrate.failed"));
+    std::fs::write(format!("{data_dir}/migrate.lock"), std::process::id().to_string())?;
+    let r = migrate_inner(data_dir, keep_backup);
+    let _ = std::fs::remove_file(format!("{data_dir}/migrate.lock"));
+    match &r {
+        Ok(()) => ui::notify(data_dir, "Dictionaries upgraded", "search is ready"),
+        Err(e) => {
+            ui::log_line(data_dir, &format!("MIGRATE ERROR: {e:?}"));
+            let _ = std::fs::write(format!("{data_dir}/migrate.failed"), format!("{e}"));
+            ui::notify(data_dir, "Upgrade failed", &format!("{e}"));
+        }
+    }
+    r
+}
+
+fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
     let wf_dir = workflow_dir();
     let imported = read_imported(data_dir);
     let ids: Vec<String> = imported["items"].as_array().map(|a| a.iter().filter_map(|i| i["arg"].as_str().map(String::from)).collect()).unwrap_or_default();
-    let todo: Vec<&String> = ids.iter().filter(|d| Path::new(&format!("{data_dir}/{d}/html")).is_dir()).collect();
-    if todo.is_empty() {
-        println!("Nothing to migrate.");
-        return Ok(());
-    }
-    println!("Migrating: {}", todo.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
-    let new_db = format!("{data_dir}/db.new");
-    meili::kill_server(data_dir);
-    let _ = std::fs::remove_dir_all(&new_db);
-    meili::start_server(&wf_dir, data_dir, &new_db)?;
-    // pack_and_index talks to whichever server is up (the new one)
-    for id in &todo {
-        println!("[{id}] reading old HTML files…");
-        let words = read_legacy_html_dir(&format!("{data_dir}/{id}/html"))?;
-        println!("[{id}] {} words; packing and indexing…", words.len());
-        pack_and_index(data_dir, id, words)?;
-    }
-    meili::kill_server(data_dir);
-    let old = format!("{data_dir}/db.premigrate");
-    let _ = std::fs::remove_dir_all(&old);
-    if Path::new(&format!("{data_dir}/db")).exists() {
-        std::fs::rename(format!("{data_dir}/db"), &old)?;
-    }
-    std::fs::rename(&new_db, format!("{data_dir}/db"))?;
-    let _ = std::fs::rename(format!("{new_db}.log"), format!("{data_dir}/db.log"));
-    if !keep_backup {
-        let _ = std::fs::remove_dir_all(&old);
-        for id in todo {
-            let _ = std::fs::remove_dir_all(format!("{data_dir}/{id}/html"));
+    let mut done_any = false;
+    for id in &ids {
+        if lookup::index_ok(data_dir, id) {
+            continue;
         }
+        let pack = format!("{data_dir}/{id}/defs.pack");
+        let html = format!("{data_dir}/{id}/html");
+        if Path::new(&pack).exists() {
+            println!("[{id}] building search index from the existing pack…");
+            let n = reindex_from_pack(data_dir, id)?;
+            println!("[{id}] {n} entries indexed");
+        } else if Path::new(&html).is_dir() {
+            println!("[{id}] reading old HTML files…");
+            let words = read_legacy_html_dir(&html)?;
+            println!("[{id}] {} words; packing and indexing…", words.len());
+            pack_and_index(data_dir, id, words)?;
+            if !keep_backup {
+                let _ = std::fs::remove_dir_all(&html);
+            }
+        } else {
+            println!("[{id}] no data found, skipping");
+            continue;
+        }
+        done_any = true;
+    }
+    if !done_any {
+        println!("Nothing to migrate.");
+    }
+    // The old Meilisearch server and its database are no longer used.
+    let _ = std::process::Command::new("pkill").args(["-x", "alfred-dict-server"]).stderr(std::process::Stdio::null()).status();
+    let _ = std::fs::remove_file(format!("{data_dir}/server.pid"));
+    if !keep_backup {
+        for d in ["db", "db.new", "db.premigrate"] {
+            let _ = std::fs::remove_dir_all(format!("{data_dir}/{d}"));
+        }
+        for f in ["db.log", "db.new.log"] {
+            let _ = std::fs::remove_file(format!("{data_dir}/{f}"));
+        }
+        let _ = std::fs::remove_dir_all(format!("{data_dir}/.venv"));
+        let _ = std::fs::remove_file(format!("{wf_dir}/alfred-dict-server"));
     }
     println!("Migration complete.");
     Ok(())
@@ -354,7 +415,7 @@ fn cmd_factory_reset(data_dir: &str) -> Result<()> {
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let keep_backup = args.iter().any(|a| a == "--keep-backup");
-    args.retain(|a| !a.starts_with("--"));
+    args.retain(|a| a != "--keep-backup");
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let wf_dir = workflow_dir();
     let data_arg = |n: usize| -> Result<String> {
@@ -382,12 +443,28 @@ fn run() -> Result<()> {
         }
         "list-unimported" => cmd_list_unimported(&data_arg(1)?),
         "migrate" => cmd_migrate(&data_arg(1)?, keep_backup),
+        "search" => {
+            // bd search <dict_id> <query>
+            let id = args.get(1).context("usage: bd search <dict_id> <query>")?;
+            let q = args.get(2).map(String::as_str).unwrap_or("");
+            let data = data_arg(3)?;
+            println!("{}", lookup::search_dict(&data, id, q)?);
+            Ok(())
+        }
+        "lookup" => {
+            let q = args.get(1).map(String::as_str).unwrap_or("");
+            let data = data_arg(2)?;
+            let out = lookup::lookup(&data, &wf_dir, q)?;
+            println!("{out}");
+            lookup::prune_cache(&data);
+            Ok(())
+        }
         "factory-reset" => cmd_factory_reset(&data_arg(1)?),
         "version" => {
             println!("bd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => bail!("usage: bd <import|list-unimported|migrate|factory-reset|version> ..."),
+        _ => bail!("usage: bd <import|search|lookup|list-unimported|migrate|factory-reset|version> ..."),
     }
 }
 

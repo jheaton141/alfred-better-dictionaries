@@ -9,12 +9,13 @@ filter in its info.plist, so every imported dictionary, keyword, hotkey and
 search index stays exactly as it is. No re-import needed.
 
 Usage (quit Alfred Preferences first; Alfred itself can stay running):
-    python3 upgrade_in_place.py [--migrate [--keep-backup]] [workflow folder]
+    python3 upgrade_in_place.py --bd PATH [--no-migrate] [--keep-backup] [workflow folder]
 
---migrate additionally converts already-imported dictionaries to the new,
-much smaller storage layout (no re-import from the macOS dictionary files
-needed). Search is unavailable while it runs; the old data is deleted only
-after every dictionary has been rebuilt (--keep-backup keeps it).
+Already-imported dictionaries are converted to the built-in search index
+(no re-import from the macOS dictionary files needed) right away; pass
+--no-migrate to let the first `lookup` do it in the background instead.
+The old Meilisearch server and database are deleted afterwards
+(--keep-backup keeps the database).
 """
 
 import glob
@@ -27,7 +28,8 @@ import sys
 
 BUNDLE_ID = "mr.pennyworth.betterDicts"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = ["lib.sh", "lookup.sh", "search.sh"]
+SCRIPTS = ["lookup.sh", "search.sh"]
+OBSOLETE = ["lib.sh", "alfred-dict-server", "jq"]  # replaced by the built-in search
 CMD = 1048576
 
 
@@ -110,7 +112,7 @@ def main():
         BD_ARG = argv[i + 1]
         del argv[i:i + 2]
     args = [a for a in argv if not a.startswith("--")]
-    migrate = "--migrate" in sys.argv
+    migrate = "--no-migrate" not in sys.argv
     keep_backup = "--keep-backup" in sys.argv
     dest = args[0] if args else find_installed()
     if not dest or not os.path.exists(f"{dest}/info.plist"):
@@ -144,7 +146,10 @@ def main():
         pass
     shutil.copy(f"{HERE}/setup.sh", f"{dest}/setup.sh")
     print(f"  installed bd from {bd_src}")
-    subprocess.call(["pkill", "-f", "alfred-dict-server"])  # restart w/ new flags
+    subprocess.call(["pkill", "-x", "alfred-dict-server"], stderr=subprocess.DEVNULL)
+    for name in OBSOLETE[:1]:  # the server/jq binaries are removed after a successful migrate
+        if os.path.exists(f"{dest}/{name}"):
+            os.remove(f"{dest}/{name}")
     print("Done. Existing dictionaries, keywords and hotkeys are untouched.")
 
     if migrate:
@@ -154,8 +159,13 @@ def main():
         cmd = [f"{dest}/bd", "migrate", data]
         if keep_backup:
             cmd.insert(2, "--keep-backup")
-        print("Migrating imported dictionaries (this can take a while)...")
-        sys.exit(subprocess.call(cmd, cwd=dest))
+        print("Building the search index for your imported dictionaries (a minute or two)...")
+        rc = subprocess.call(cmd, cwd=dest)
+        if rc == 0:
+            for name in OBSOLETE[1:]:
+                if os.path.exists(f"{dest}/{name}"):
+                    os.remove(f"{dest}/{name}")
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

@@ -11,14 +11,11 @@ from pyapp import plist
 BUILD_DIR = "wfbuild"
 WF_FILES = [
     "AlfredExtraPane.app",
-    "alfred-dict-server",
     "bd",
     "dict-entry.css",
     "extra-pane-config.json",
     "icon.png",
     "info.plist",
-    "jq",
-    "lib.sh",
     "lookup.sh",
     "uv",
     "README.md",
