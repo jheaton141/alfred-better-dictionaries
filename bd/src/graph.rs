@@ -42,17 +42,17 @@ impl Graph {
         Ok(())
     }
 
-    fn arr(&mut self, key: &str) -> &mut Vec<Value> {
+    fn arr(&mut self, key: &str) -> Result<&mut Vec<Value>> {
         self.root
             .get_mut(key)
             .and_then(|v| v.as_array_mut())
-            .expect(key)
+            .with_context(|| format!("info.plist has no '{key}' array"))
     }
-    fn dict(&mut self, key: &str) -> &mut Dictionary {
+    fn dict(&mut self, key: &str) -> Result<&mut Dictionary> {
         self.root
             .get_mut(key)
             .and_then(|v| v.as_dictionary_mut())
-            .expect(key)
+            .with_context(|| format!("info.plist has no '{key}' dictionary"))
     }
 
     fn add_object(
@@ -61,7 +61,7 @@ impl Graph {
         version: i64,
         config: Option<Dictionary>,
         note: Option<&str>,
-    ) -> String {
+    ) -> Result<String> {
         let uid = uuid::Uuid::new_v4().to_string().to_uppercase();
         let mut o = d(vec![
             ("type", s(typ)),
@@ -71,7 +71,7 @@ impl Graph {
         if let Some(c) = config {
             o.insert("config".into(), Value::Dictionary(c));
         }
-        self.arr("objects").push(Value::Dictionary(o));
+        self.arr("objects")?.push(Value::Dictionary(o));
         let mut ui = Dictionary::new();
         if let Some(n) = note {
             ui.insert("note".into(), s(n));
@@ -79,18 +79,18 @@ impl Graph {
         ui.insert("noexport".into(), i(1));
         ui.insert("xpos".into(), i(0));
         ui.insert("ypos".into(), i(0));
-        self.dict("uidata")
+        self.dict("uidata")?
             .insert(uid.clone(), Value::Dictionary(ui));
-        self.dict("connections")
+        self.dict("connections")?
             .insert(uid.clone(), Value::Array(vec![]));
-        uid
+        Ok(uid)
     }
 
-    pub fn new_junction(&mut self) -> String {
+    pub fn new_junction(&mut self) -> Result<String> {
         self.add_object("alfred.workflow.utility.junction", 1, None, None)
     }
 
-    pub fn new_hotkey(&mut self, note: &str) -> String {
+    pub fn new_hotkey(&mut self, note: &str) -> Result<String> {
         let c = d(vec![
             ("action", i(0)),
             ("argument", i(0)),
@@ -106,7 +106,7 @@ impl Graph {
         self.add_object("alfred.workflow.trigger.hotkey", 2, Some(c), Some(note))
     }
 
-    pub fn new_fallback(&mut self, note: &str, title: &str) -> String {
+    pub fn new_fallback(&mut self, note: &str, title: &str) -> Result<String> {
         self.add_object(
             "alfred.workflow.trigger.fallback",
             1,
@@ -115,7 +115,7 @@ impl Graph {
         )
     }
 
-    pub fn new_script_filter(&mut self, title: &str, script: &str, note: &str) -> String {
+    pub fn new_script_filter(&mut self, title: &str, script: &str, note: &str) -> Result<String> {
         let c = d(vec![
             ("title", s(title)),
             ("script", s(script)),
@@ -149,11 +149,12 @@ impl Graph {
             })
     }
 
-    fn object_mut(&mut self, uid: &str) -> Option<&mut Dictionary> {
-        self.arr("objects")
+    fn object_mut(&mut self, uid: &str) -> Result<Option<&mut Dictionary>> {
+        Ok(self
+            .arr("objects")?
             .iter_mut()
             .filter_map(|o| o.as_dictionary_mut())
-            .find(|o| o.get("uid").and_then(|u| u.as_string()) == Some(uid))
+            .find(|o| o.get("uid").and_then(|u| u.as_string()) == Some(uid)))
     }
 
     pub fn add_router_output(&mut self, router_uid: &str, output: &str) -> Result<(String, usize)> {
@@ -167,7 +168,7 @@ impl Graph {
             ("uid", s(&out_uid)),
         ]);
         let router = self
-            .object_mut(router_uid)
+            .object_mut(router_uid)?
             .context("router object missing")?;
         let conds = router
             .get_mut("config")
@@ -179,7 +180,13 @@ impl Graph {
         Ok((out_uid, conds.len()))
     }
 
-    pub fn connect(&mut self, src: &str, dst: &str, modifiers: i64, src_out: Option<&str>) {
+    pub fn connect(
+        &mut self,
+        src: &str,
+        dst: &str,
+        modifiers: i64,
+        src_out: Option<&str>,
+    ) -> Result<()> {
         let mut c = d(vec![
             ("destinationuid", s(dst)),
             ("modifiers", i(modifiers)),
@@ -189,16 +196,16 @@ impl Graph {
         if let Some(o) = src_out {
             c.insert("sourceoutputuid".into(), s(o));
         }
-        let conns = self.dict("connections");
+        let conns = self.dict("connections")?;
         if !conns.contains_key(src) {
             conns.insert(src.into(), Value::Array(vec![]));
         }
         conns
             .get_mut(src)
-            .unwrap()
-            .as_array_mut()
-            .unwrap()
+            .and_then(|v| v.as_array_mut())
+            .with_context(|| format!("connections for {src} is not an array"))?
             .push(Value::Dictionary(c));
+        Ok(())
     }
 
     fn coord(&self, uid: &str, key: &str) -> i64 {
@@ -221,13 +228,54 @@ impl Graph {
     pub fn y(&self, uid: &str) -> i64 {
         self.coord(uid, "ypos")
     }
-    pub fn set_pos(&mut self, uid: &str, key: &str, v: i64) {
+    pub fn set_pos(&mut self, uid: &str, key: &str, v: i64) -> Result<()> {
         if let Some(u) = self
-            .dict("uidata")
+            .dict("uidata")?
             .get_mut(uid)
             .and_then(|u| u.as_dictionary_mut())
         {
             u.insert(key.into(), i(v));
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty() -> Graph {
+        Graph {
+            path: String::new(),
+            root: Dictionary::new(),
+        }
+    }
+
+    #[test]
+    fn plist_without_objects_is_an_error_not_a_panic() {
+        let mut g = empty();
+        assert!(g.new_junction().is_err());
+        assert!(g.new_hotkey("n").is_err());
+        assert!(g.new_fallback("n", "t").is_err());
+        assert!(g.new_script_filter("t", "s", "n").is_err());
+        assert!(g.connect("a", "b", 0, None).is_err());
+        assert!(g.add_router_output("r", "o").is_err());
+        assert!(g.set_pos("a", "xpos", 1).is_err());
+    }
+
+    #[test]
+    fn objects_are_added_and_connected() {
+        let mut g = empty();
+        g.root.insert("objects".into(), Value::Array(vec![]));
+        g.root
+            .insert("uidata".into(), Value::Dictionary(Dictionary::new()));
+        g.root
+            .insert("connections".into(), Value::Dictionary(Dictionary::new()));
+        let a = g.new_junction().unwrap();
+        let b = g.new_hotkey("hk").unwrap();
+        g.connect(&a, &b, 0, None).unwrap();
+        g.set_pos(&a, "xpos", 7).unwrap();
+        assert_eq!(g.x(&a), 7);
+        assert_eq!(g.uid_with_label("hk"), Some(b));
     }
 }

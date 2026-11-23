@@ -36,7 +36,7 @@ pub fn read_varint(b: &[u8], pos: &mut usize) -> u64 {
         let c = b[*pos];
         *pos += 1;
         v |= ((c & 0x7f) as u64) << shift;
-        if c & 0x80 == 0 {
+        if c & 0x80 == 0 || shift >= 56 {
             break;
         }
         shift += 7;
@@ -51,18 +51,29 @@ fn write_str(out: &mut Vec<u8>, s: &str) {
 
 fn read_str<'a>(b: &'a [u8], pos: &mut usize) -> &'a str {
     let n = read_varint(b, pos) as usize;
-    let end = (*pos + n).min(b.len());
-    let s = std::str::from_utf8(&b[*pos..end]).unwrap_or("");
+    let start = (*pos).min(b.len());
+    let end = start.saturating_add(n).min(b.len());
     *pos = end;
-    s
+    b.get(start..end)
+        .and_then(|x| std::str::from_utf8(x).ok())
+        .unwrap_or("")
+}
+
+/// `N` little-endian bytes at byte offset `pos`; zeros when out of range.
+fn le_bytes<const N: usize>(b: &[u8], pos: usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    if let Some(s) = pos.checked_add(N).and_then(|e| b.get(pos..e)) {
+        out.copy_from_slice(s);
+    }
+    out
 }
 
 fn u32_at(b: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap())
+    u32::from_le_bytes(le_bytes(b, i.saturating_mul(4)))
 }
 
 fn u64_at(b: &[u8], i: usize) -> u64 {
-    u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap())
+    u64::from_le_bytes(le_bytes(b, i.saturating_mul(8)))
 }
 
 /// Folded form of a title, used for ordering and prefix search.
@@ -224,7 +235,7 @@ impl<'a> Terms<'a> {
         if sec.len() < 4 {
             bail!("index: truncated term section");
         }
-        let n = u32::from_le_bytes(sec[..4].try_into().unwrap()) as usize;
+        let n = u32_at(sec, 0) as usize;
         let to = 4;
         let po = to + (n + 1) * 4;
         let tbs = po + (n + 1) * 8;
@@ -244,6 +255,32 @@ impl<'a> Terms<'a> {
             tb: &sec[tbs..pbs],
             pb: &sec[pbs..],
         })
+    }
+
+    /// A section with no terms (stands in only for a section `Index::open` already validated).
+    fn empty() -> Terms<'static> {
+        Terms {
+            n: 0,
+            term_off: &[],
+            post_off: &[],
+            tb: &[],
+            pb: &[],
+        }
+    }
+
+    /// Check that every offset table is monotonic and inside the term and posting bytes.
+    fn validate(&self) -> Result<()> {
+        let (mut prev_t, mut prev_p) = (0u32, 0u64);
+        for i in 0..=self.n {
+            let (t, p) = (u32_at(self.term_off, i), u64_at(self.post_off, i));
+            if t < prev_t || t as usize > self.tb.len() || p < prev_p || p as usize > self.pb.len()
+            {
+                bail!("index: corrupt term offsets");
+            }
+            prev_t = t;
+            prev_p = p;
+        }
+        Ok(())
     }
 
     pub fn term(&self, i: usize) -> &'a [u8] {
@@ -321,18 +358,31 @@ impl Index {
         if mmap.len() < HEADER_LEN || &mmap[..8] != MAGIC {
             bail!("{path} is not a BetterDict index (or is from a newer version)");
         }
-        let n = u32::from_le_bytes(mmap[8..12].try_into().unwrap()) as usize;
+        let n = u32_at(&mmap, 2) as usize;
         let mut sec = [(0, 0); 5];
         for (i, s) in sec.iter_mut().enumerate() {
             let base = 16 + i * 16;
-            let off = u64::from_le_bytes(mmap[base..base + 8].try_into().unwrap()) as usize;
-            let len = u64::from_le_bytes(mmap[base + 8..base + 16].try_into().unwrap()) as usize;
+            let off = u64::from_le_bytes(le_bytes(&mmap, base)) as usize;
+            let len = u64::from_le_bytes(le_bytes(&mmap, base + 8)) as usize;
             if off.checked_add(len).is_none_or(|e| e > mmap.len()) {
                 bail!("{path} is truncated");
             }
             *s = (off, len);
         }
-        Ok(Index { mmap, n, sec })
+        let ix = Index { mmap, n, sec };
+        let (offs, blob) = (ix.section(0), ix.section(1));
+        if offs.len() != (n + 1) * 8 || u64_at(offs, n) != blob.len() as u64 {
+            bail!("{path} has a corrupt document table");
+        }
+        if ix.section(2).len() != n * 4 {
+            bail!("{path} has a corrupt title order");
+        }
+        for i in [3, 4] {
+            Terms::parse(ix.section(i))
+                .and_then(|t| t.validate())
+                .with_context(|| format!("{path}: bad term section"))?;
+        }
+        Ok(ix)
     }
 
     fn section(&self, i: usize) -> &[u8] {
@@ -364,11 +414,11 @@ impl Index {
     }
 
     pub fn head(&self) -> Terms<'_> {
-        Terms::parse(self.section(3)).expect("head section")
+        Terms::parse(self.section(3)).unwrap_or_else(|_| Terms::empty())
     }
 
     pub fn full(&self) -> Terms<'_> {
-        Terms::parse(self.section(4)).expect("full section")
+        Terms::parse(self.section(4)).unwrap_or_else(|_| Terms::empty())
     }
 
     /// First position in title order whose folded title is >= `key`.
@@ -383,5 +433,124 @@ impl Index {
             }
         }
         lo
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::{DocRec, Prepared};
+
+    fn tmp(name: &str) -> String {
+        format!(
+            "{}/bd-index-{}-{name}.bin",
+            std::env::temp_dir().display(),
+            std::process::id()
+        )
+    }
+
+    fn build(n: usize, path: &str) {
+        let mut b = Builder::new();
+        for i in 0..n {
+            b.add(&Prepared {
+                rec: DocRec {
+                    title: format!("word{i}"),
+                    forms: String::new(),
+                    name: "n".into(),
+                    off: i as u64,
+                    len: 1,
+                },
+                full_terms: vec![format!("def{i}")],
+            });
+        }
+        b.finish(path).unwrap();
+    }
+
+    /// Build a small index, let `patch` edit its bytes, and return what `Index::open` says.
+    fn open_patched(name: &str, patch: impl Fn(&mut Vec<u8>)) -> Result<Index> {
+        let path = tmp(name);
+        build(50, &path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        patch(&mut bytes);
+        std::fs::write(&path, &bytes).unwrap();
+        let r = Index::open(&path);
+        let _ = std::fs::remove_file(&path);
+        r
+    }
+
+    fn sec(bytes: &[u8], i: usize) -> (usize, usize) {
+        let b = 16 + i * 16;
+        (
+            u64::from_le_bytes(le_bytes(bytes, b)) as usize,
+            u64::from_le_bytes(le_bytes(bytes, b + 8)) as usize,
+        )
+    }
+
+    #[test]
+    fn open_accepts_a_good_index() {
+        let ix = open_patched("good", |_| {}).unwrap();
+        assert_eq!(ix.n, 50);
+        assert_eq!(ix.head().n, 50);
+        assert!(ix.full().exact(b"def7").is_some());
+    }
+
+    #[test]
+    fn open_rejects_corrupt_term_sections() {
+        // term_off[1] of the head section points far past the term bytes
+        assert!(open_patched("termoff", |b| {
+            let at = sec(b, 3).0 + 4 + 4;
+            b[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        })
+        .is_err());
+        // post_off[2] of the full section decreases below post_off[1]
+        assert!(open_patched("postoff", |b| {
+            let (o, _) = sec(b, 4);
+            let n = u32::from_le_bytes(le_bytes(b, o)) as usize;
+            let at = o + 4 + (n + 1) * 4 + 2 * 8;
+            b[at..at + 8].copy_from_slice(&0u64.to_le_bytes());
+            let at1 = at - 8;
+            b[at1..at1 + 8].copy_from_slice(&5u64.to_le_bytes());
+        })
+        .is_err());
+        // the head section is cut short
+        assert!(open_patched("short", |b| {
+            let at = 16 + 3 * 16 + 8;
+            b[at..at + 8].copy_from_slice(&10u64.to_le_bytes());
+        })
+        .is_err());
+        // the term count claims more terms than the section holds
+        assert!(open_patched("count", |b| {
+            let at = sec(b, 4).0;
+            b[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn open_rejects_corrupt_doc_tables() {
+        assert!(open_patched("docs", |b| {
+            let at = 16 + 8;
+            b[at..at + 8].copy_from_slice(&16u64.to_le_bytes());
+        })
+        .is_err());
+        assert!(open_patched("order", |b| {
+            let at = 16 + 2 * 16 + 8;
+            b[at..at + 8].copy_from_slice(&8u64.to_le_bytes());
+        })
+        .is_err());
+    }
+
+    #[test]
+    #[ignore]
+    fn time_open_100k_terms() {
+        let path = tmp("time");
+        build(100_000, &path);
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            let ix = Index::open(&path).unwrap();
+            std::hint::black_box(&ix);
+        }
+        eprintln!("open: {:?} per call", t.elapsed() / 100);
+        let _ = std::fs::remove_file(&path);
     }
 }

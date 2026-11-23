@@ -351,8 +351,12 @@ pub fn search(ix: &Index, q: &str, limit: usize) -> Vec<Hit> {
         let mut lists: Vec<Vec<u32>> = vec![];
         for (j, t) in qt.iter().enumerate() {
             let l = full_docs(&full, t, j == last);
-            // very common words are not indexed; ignore short unknown words
-            if l.is_empty() && t.len() <= 3 && qt.len() > 1 {
+            // Words missing from the definition index are skipped when short, a function word, or a
+            // title word (every entry's text holds its own title words, so it was dropped as too common).
+            let skippable = (t.len() <= 3 && qt.len() > 1)
+                || STOPWORDS.contains(&t.as_str())
+                || head.exact(t.as_bytes()).is_some();
+            if l.is_empty() && skippable {
                 continue;
             }
             lists.push(l);
@@ -448,7 +452,8 @@ mod tests {
         let dir = tempdir::Dir::new();
         let mut b = Builder::new();
         for (i, (title, forms, body)) in docs.iter().enumerate() {
-            let mut ft = tokens(body);
+            // like production, the full text of an entry contains its own headword
+            let mut ft = tokens(&format!("{title} {body}"));
             ft.sort();
             ft.dedup();
             b.add(&Prepared {
@@ -699,6 +704,62 @@ mod tests {
             .collect();
         let (_d, ix) = build(&refs);
         assert_eq!(titles(&ix, "a tachycardia of")[0], "tachycardia");
+    }
+
+    /// 2000+ entries where `common` is in every definition (so the builder drops it from the full-text index).
+    fn big_index_with_common(common: &str) -> (tempdir::Dir, Index) {
+        let mut docs: Vec<(String, String, String)> = (0..2100)
+            .map(|i| {
+                (
+                    format!("filler{i}"),
+                    String::new(),
+                    format!("{common} stuff{i}"),
+                )
+            })
+            .collect();
+        docs.push((
+            common.into(),
+            String::new(),
+            format!("{common} a small word"),
+        ));
+        docs.push((
+            "latte".into(),
+            String::new(),
+            format!("{common} drink of coffee {common} hot milk"),
+        ));
+        let refs: Vec<(&str, &str, &str)> = docs
+            .iter()
+            .map(|d| (d.0.as_str(), d.1.as_str(), d.2.as_str()))
+            .collect();
+        build(&refs)
+    }
+
+    #[test]
+    fn common_dropped_words_do_not_block_the_definition_stage() {
+        for common in ["with", "regarding"] {
+            let (_d, ix) = big_index_with_common(common);
+            assert!(
+                ix.full().exact(common.as_bytes()).is_none(),
+                "{common} should be dropped"
+            );
+            let q = format!("coffee {common} milk");
+            let hits = search(&ix, &q, 9);
+            let latte = hits.iter().find(|h| ix.doc(h.doc).title == "latte");
+            let latte = latte.unwrap_or_else(|| panic!("no latte for {q}"));
+            assert!(
+                tier_of(latte.key) >= T_FULL,
+                "{q}: tier {}",
+                tier_of(latte.key)
+            );
+        }
+    }
+
+    #[test]
+    fn query_of_only_dropped_words_matches_nothing_in_the_definition_stage() {
+        let (_d, ix) = big_index_with_common("regarding");
+        let hits = search(&ix, "regarding with", 9);
+        assert!(hits.iter().all(|h| tier_of(h.key) < T_FULL), "{hits:?}");
+        assert!(hits.len() < 9);
     }
 
     #[test]

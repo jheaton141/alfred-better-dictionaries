@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// Directory holding info.plist, the server binary, etc. (bd lives there).
 fn workflow_dir() -> String {
@@ -108,12 +109,52 @@ fn all_dict_paths() -> Vec<String> {
     out
 }
 
+// literal patterns: compilation cannot fail
+static TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"d:title="(.*?)""#).expect("literal pattern"));
+static BODY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<body>(.*)</body>").expect("literal pattern"));
+
+/// Open `path` (creating it) and take an exclusive lock, released when the file drops.
+fn lock_exclusive(path: &str) -> Result<std::fs::File> {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {path}"))?;
+    f.lock().with_context(|| format!("locking {path}"))?;
+    Ok(f)
+}
+
 fn read_imported(data_dir: &str) -> Value {
     std::fs::read_to_string(format!("{data_dir}/imported.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .filter(|v| v["items"].is_array())
         .unwrap_or_else(|| json!({"items": []}))
+}
+
+/// Values of `key` over the items of imported.json.
+fn imported_field(data_dir: &str, key: &str) -> Vec<String> {
+    read_imported(data_dir)["items"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i[key].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Ids of the dictionaries listed in imported.json.
+fn imported_ids(data_dir: &str) -> Vec<String> {
+    imported_field(data_dir, "arg")
+}
+
+/// Display names of the dictionaries listed in imported.json.
+fn imported_titles(data_dir: &str) -> Vec<String> {
+    imported_field(data_dir, "title")
 }
 
 // ---------------------------------------------------------------- packing
@@ -124,11 +165,10 @@ struct Entry {
 }
 
 fn group_by_word(defs: Vec<String>) -> Vec<(String, Vec<String>)> {
-    let re = Regex::new(r#"d:title="(.*?)""#).unwrap();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<(String, Vec<String>)> = vec![];
     for defn in defs {
-        let Some(c) = re.captures(&defn) else {
+        let Some(c) = TITLE_RE.captures(&defn) else {
             continue;
         };
         let word = c[1].to_string();
@@ -141,19 +181,47 @@ fn group_by_word(defs: Vec<String>) -> Vec<(String, Vec<String>)> {
     out
 }
 
-fn gzip(data: &[u8]) -> Vec<u8> {
+fn gzip(data: &[u8]) -> Result<Vec<u8>> {
     let mut e = flate2::GzBuilder::new()
         .mtime(0)
         .write(Vec::new(), flate2::Compression::best());
-    e.write_all(data).unwrap();
-    e.finish().unwrap()
+    e.write_all(data)?;
+    Ok(e.finish()?)
+}
+
+/// Cache file name of the n-th entry titled `word`; the separator keeps ("X1", 0) and ("X", 10) apart.
+fn entry_name(word: &str, n: usize) -> String {
+    format!("{}.html", item::base16(&format!("{word}\u{1}{n}")))
+}
+
+/// Deletes its files when dropped (temp files left by a failed build; renamed files are already gone).
+struct RemoveOnDrop(Vec<String>);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 /// Compress every definition into one pack file (one gzip member each) and
 /// build the search index. Returns the number of documents.
+/// Holds the dictionary's lock throughout; the new pack and index are renamed into place back to
+/// back, pack first. A lookup that pairs the old index with the new pack fails the title check in
+/// `lookup::read_definition` and shows "Definition unavailable" for that hit.
 fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -> Result<usize> {
     std::fs::create_dir_all(format!("{data_dir}/{id}"))?;
+    let _lock = lock_exclusive(&format!("{data_dir}/{id}.lock"))?;
     let pack_path = format!("{data_dir}/{id}/defs.pack");
+    let pack_tmp = format!("{pack_path}.tmp");
+    let index_path = lookup::index_path(data_dir, id);
+    let index_new = format!("{index_path}.new");
+    let _cleanup = RemoveOnDrop(vec![
+        pack_tmp.clone(),
+        index_new.clone(),
+        format!("{index_new}.tmp"),
+    ]);
 
     let entries: Vec<Entry> = words
         .into_iter()
@@ -167,13 +235,13 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
         .collect();
     let total = entries.len();
 
-    // filename = base16(word + n) where n counts within the word
+    // n counts the entries of one word
     let mut counters: HashMap<&str, usize> = HashMap::new();
     let names: Vec<String> = entries
         .iter()
         .map(|e| {
             let n = counters.entry(e.word.as_str()).or_insert(0);
-            let name = format!("{}.html", item::base16(&format!("{}{}", e.word, n)));
+            let name = entry_name(&e.word, *n);
             *n += 1;
             name
         })
@@ -183,7 +251,7 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
     let sel = item::Sel::new();
     let mut builder = index::Builder::new();
     let chunk = 2000;
-    let mut pack = std::io::BufWriter::new(std::fs::File::create(&pack_path)?);
+    let mut pack = std::io::BufWriter::new(std::fs::File::create(&pack_tmp)?);
     let mut offset: u64 = 0;
     let mut done = 0;
     for (ci, group) in entries.chunks(chunk).enumerate() {
@@ -192,12 +260,12 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
             .par_iter()
             .zip(names_slice.par_iter())
             .map(|(e, name)| {
-                (
-                    gzip(e.defn.as_bytes()),
+                Ok((
+                    gzip(e.defn.as_bytes())?,
                     item::prepare(&sel, &e.word, name, &e.defn),
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         for (blob, mut p) in built {
             p.rec.off = offset;
             p.rec.len = blob.len() as u64;
@@ -212,7 +280,9 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
     drop(pack);
 
     ui::notify(data_dir, "Writing the search index", "almost done…");
-    builder.finish(&lookup::index_path(data_dir, id))?;
+    builder.finish(&index_new)?;
+    std::fs::rename(&pack_tmp, &pack_path)?;
+    std::fs::rename(&index_new, &index_path)?;
     prog.done();
     Ok(total)
 }
@@ -220,15 +290,14 @@ fn pack_and_index(data_dir: &str, id: &str, words: Vec<(String, Vec<String>)>) -
 /// Rebuild only the search index of a dictionary from its existing pack
 /// (the pack alone holds every definition, in import order).
 fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
+    let _lock = lock_exclusive(&format!("{data_dir}/{id}.lock"))?;
     let pack_path = format!("{data_dir}/{id}/defs.pack");
     let buf = std::fs::read(&pack_path).with_context(|| format!("reading {pack_path}"))?;
-    let title_re = Regex::new(r#"d:title="(.*?)""#).unwrap();
     let sel = item::Sel::new();
     let mut builder = index::Builder::new();
     let mut counters: HashMap<String, usize> = HashMap::new();
     let mut prog = ui::Progress::new(data_dir, &format!("Building search index ({id})"));
     let mut pos = 0usize;
-    let mut last_word = String::new();
     while pos < buf.len() {
         // decode up to 2000 members, remembering where each one sits
         let mut chunk: Vec<(u64, u64, String, String, String)> = vec![];
@@ -239,12 +308,12 @@ fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
                 .with_context(|| format!("corrupt member at byte {pos} of {pack_path}"))?;
             let consumed = buf.len() - pos - dec.into_inner().len();
             let defn = String::from_utf8_lossy(&raw).into_owned();
-            let word = title_re
+            let word = TITLE_RE
                 .captures(&defn)
                 .map(|c| c[1].to_string())
                 .unwrap_or_default();
             let n = counters.entry(word.clone()).or_insert(0);
-            let name = format!("{}.html", item::base16(&format!("{word}{n}")));
+            let name = entry_name(&word, *n);
             *n += 1;
             chunk.push((pos as u64, consumed as u64, word, name, defn));
             pos += consumed;
@@ -261,10 +330,9 @@ fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
         for p in &built {
             builder.add(p);
         }
-        last_word = chunk.last().map(|c| c.2.clone()).unwrap_or_default();
-        prog.update(pos, buf.len(), &last_word);
+        let last_word = chunk.last().map_or("", |c| c.2.as_str());
+        prog.update(pos, buf.len(), last_word);
     }
-    let _ = last_word;
     let n = builder.len();
     builder.finish(&lookup::index_path(data_dir, id))?;
     prog.done();
@@ -276,16 +344,16 @@ fn reindex_from_pack(data_dir: &str, id: &str) -> Result<usize> {
 fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
     use graph::{Graph, CMD};
     let mut wf = Graph::load(&format!("{wf_dir}/info.plist"))?;
-    let junction = wf.new_junction();
-    let hotkey = wf.new_hotkey(name);
-    let fallback = wf.new_fallback(name, &format!("search {name}"));
+    let junction = wf.new_junction()?;
+    let hotkey = wf.new_hotkey(name)?;
+    let fallback = wf.new_fallback(name, &format!("search {name}"))?;
     let sf = wf.new_script_filter(
         &format!("search {name}"),
         &format!(
             "open -g ./AlfredExtraPane.app\n\nquery=\"$1\"\n\n./search.sh \"$query\" \"{id}\""
         ),
         name,
-    );
+    )?;
     let label = |wf: &Graph, l: &str| {
         wf.uid_with_label(l)
             .with_context(|| format!("workflow object '{l}' not found"))
@@ -294,12 +362,12 @@ fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
     let (router_out, rows) = wf.add_router_output(&router, id)?;
     let ipa = label(&wf, "Play pronunciation audio")?;
     let opener = label(&wf, "Open definition in browser")?;
-    wf.connect(&hotkey, &sf, 0, None);
-    wf.connect(&fallback, &sf, 0, None);
-    wf.connect(&junction, &sf, 0, None);
-    wf.connect(&sf, &ipa, CMD, None);
-    wf.connect(&sf, &opener, 0, None);
-    wf.connect(&router, &junction, 0, Some(&router_out));
+    wf.connect(&hotkey, &sf, 0, None)?;
+    wf.connect(&fallback, &sf, 0, None)?;
+    wf.connect(&junction, &sf, 0, None)?;
+    wf.connect(&sf, &ipa, CMD, None)?;
+    wf.connect(&sf, &opener, 0, None)?;
+    wf.connect(&router, &junction, 0, Some(&router_out))?;
 
     let off = 180 * (rows as i64 - 1);
     for (obj, dummy) in [
@@ -310,11 +378,11 @@ fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
     ] {
         let d = label(&wf, dummy)?;
         let (x, y) = (wf.x(&d), wf.y(&d));
-        wf.set_pos(obj, "xpos", x);
-        wf.set_pos(obj, "ypos", y + off);
+        wf.set_pos(obj, "xpos", x)?;
+        wf.set_pos(obj, "ypos", y + off)?;
     }
     let y = wf.y(&sf);
-    wf.set_pos(&opener, "ypos", y);
+    wf.set_pos(&opener, "ypos", y)?;
     wf.save()
 }
 
@@ -337,17 +405,12 @@ fn cmd_import(dict_path: &str, data_dir: &str, objects: bool) -> Result<()> {
     let n = pack_and_index(data_dir, &id, words)?;
 
     // Serialise the read-modify-write of imported.json (setup and .dict-import can overlap).
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(format!("{data_dir}/imported.lock"))?;
-    lock.lock()?; // released when `lock` drops
+    let _lock = lock_exclusive(&format!("{data_dir}/imported.lock"))?;
     let mut imported = read_imported(data_dir);
-    if imported["items"]
-        .as_array()
-        .is_some_and(|a| a.iter().any(|i| i["arg"] == id.as_str()))
-    {
+    let Some(items) = imported["items"].as_array_mut() else {
+        bail!("imported.json has no items list");
+    };
+    if items.iter().any(|i| i["arg"] == id.as_str()) {
         ui::notify(
             data_dir,
             &format!("Re-imported {name}"),
@@ -355,10 +418,7 @@ fn cmd_import(dict_path: &str, data_dir: &str, objects: bool) -> Result<()> {
         );
         return Ok(());
     }
-    imported["items"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"title": name, "arg": id}));
+    items.push(json!({"title": name, "arg": id}));
     if objects {
         create_workflow_objects(&wf_dir, &name, &id)?;
     }
@@ -374,14 +434,7 @@ fn cmd_import(dict_path: &str, data_dir: &str, objects: bool) -> Result<()> {
 }
 
 fn cmd_list_unimported(data_dir: &str) -> Result<()> {
-    let imported: Vec<String> = read_imported(data_dir)["items"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| i["title"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let imported = imported_titles(data_dir);
     let mut items = vec![];
     for p in all_dict_paths() {
         match dict_info(&p) {
@@ -433,10 +486,7 @@ fn cmd_setup(data_dir: &str) -> Result<()> {
         let _ = std::fs::write(format!("{data_dir}/setup.failed"), format!("{e}"));
         ui::log_line(data_dir, &format!("SETUP ERROR: {e:?}"));
         // a user who already has dictionaries gets no repeated pop-up on each retry
-        if read_imported(data_dir)["items"]
-            .as_array()
-            .is_none_or(|a| a.is_empty())
-        {
+        if imported_ids(data_dir).is_empty() {
             ui::notify(data_dir, "Setup failed", &format!("{e}"));
         }
     }
@@ -449,14 +499,7 @@ fn setup_inner(data_dir: &str) -> Result<()> {
     if found.is_empty() {
         bail!("No built-in dictionary found. Open Dictionary.app > Settings and tick New Oxford American Dictionary and the Thesaurus, then try again (or .dict-import another)");
     }
-    let have: Vec<String> = read_imported(data_dir)["items"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| i["arg"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let have = imported_ids(data_dir);
     let mut failed = vec![];
     for (path, id) in &found {
         if have.contains(id) {
@@ -480,8 +523,6 @@ fn setup_inner(data_dir: &str) -> Result<()> {
 }
 
 fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
-    let body_re = Regex::new(r"(?s)<body>(.*)</body>").unwrap();
-    let title_re = Regex::new(r#"d:title="(.*?)""#).unwrap();
     let mut names: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -491,9 +532,9 @@ fn read_legacy_html_dir(dir: &str) -> Result<Vec<(String, Vec<String>)>> {
     let mut defs = vec![];
     for n in names {
         let text = String::from_utf8_lossy(&std::fs::read(format!("{dir}/{n}"))?).into_owned();
-        if let Some(m) = body_re.captures(&text) {
+        if let Some(m) = BODY_RE.captures(&text) {
             let defn = m[1].to_string();
-            if title_re.is_match(&defn) {
+            if TITLE_RE.is_match(&defn) {
                 defs.push(defn);
             }
         }
@@ -525,15 +566,7 @@ fn cmd_migrate(data_dir: &str, keep_backup: bool) -> Result<()> {
 
 fn migrate_inner(data_dir: &str, keep_backup: bool) -> Result<()> {
     let wf_dir = workflow_dir();
-    let imported = read_imported(data_dir);
-    let ids: Vec<String> = imported["items"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| i["arg"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let ids = imported_ids(data_dir);
     let mut done_any = false;
     for id in &ids {
         if lookup::index_ok(data_dir, id) {
@@ -601,6 +634,14 @@ fn cmd_factory_reset(data_dir: &str) -> Result<()> {
     Ok(())
 }
 
+/// The workflow folder of `bd upgrade <repo> [workflow_dir] [flags]`: the first non-flag argument after the repo.
+fn upgrade_dest(args: &[String]) -> Option<&str> {
+    args.iter()
+        .skip(2)
+        .map(String::as_str)
+        .find(|a| !a.starts_with("--"))
+}
+
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let keep_backup = args.iter().any(|a| a == "--keep-backup");
@@ -656,7 +697,7 @@ fn run() -> Result<()> {
         "upgrade" => {
             let repo = args.get(1).context("usage: bd upgrade <repo> [workflow_dir] [--no-migrate] [--keep-backup]")?;
             let no_migrate = args.iter().any(|a| a == "--no-migrate");
-            let dest = args.get(2).map(String::as_str).filter(|a| !a.starts_with("--"));
+            let dest = upgrade_dest(&args);
             pkg::upgrade(repo, dest, |dest, _| {
                 if no_migrate {
                     return Ok(());
@@ -712,5 +753,141 @@ mod tests {
         let words = read_legacy_html_dir(dir.to_str().unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(words, vec![("word".to_string(), vec![body.to_string()])]);
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("bd-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn defn(word: &str, filler: usize) -> String {
+        format!(
+            "<d:entry d:title=\"{word}\">{}</d:entry>",
+            "lorem ipsum ".repeat(filler)
+        )
+    }
+
+    /// Every index entry must decode, from its offset in the pack, to a definition with its own title.
+    fn assert_pack_matches_index(data_dir: &str, id: &str) {
+        let idx = index::Index::open(&lookup::index_path(data_dir, id)).unwrap();
+        let pack = std::fs::read(format!("{data_dir}/{id}/defs.pack")).unwrap();
+        for i in 0..idx.n as u32 {
+            let d = idx.doc(i);
+            let end = (d.off + d.len) as usize;
+            assert!(end <= pack.len(), "doc {i} lies outside the pack");
+            let mut html = String::new();
+            flate2::read::GzDecoder::new(&pack[d.off as usize..end])
+                .read_to_string(&mut html)
+                .unwrap_or_else(|e| panic!("doc {i} is not a gzip member: {e}"));
+            assert!(
+                html.contains(&format!("d:title=\"{}\"", d.title)),
+                "doc {i} has the wrong body"
+            );
+        }
+    }
+
+    fn words_set(prefix: &str, n: usize) -> Vec<(String, Vec<String>)> {
+        (0..n)
+            .map(|i| {
+                let w = format!("{prefix}{i}");
+                (w.clone(), vec![defn(&w, 40 + i % 7)])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn concurrent_imports_of_one_dictionary_stay_consistent() {
+        let dir = tmp_dir("race");
+        let data = dir.to_str().unwrap().to_string();
+        for _ in 0..3 {
+            let hs: Vec<_> = ["a", "b"]
+                .into_iter()
+                .map(|p| {
+                    let data = data.clone();
+                    std::thread::spawn(move || {
+                        pack_and_index(&data, "dict", words_set(p, 2500)).unwrap();
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap();
+            }
+            assert_pack_matches_index(&data, "dict");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cache_names_are_unique_across_titles() {
+        let dir = tmp_dir("names");
+        let data = dir.to_str().unwrap();
+        let words = vec![
+            ("X1".to_string(), vec![defn("X1", 1)]),
+            ("X".to_string(), (0..11).map(|_| defn("X", 1)).collect()),
+        ];
+        pack_and_index(data, "dict", words).unwrap();
+        let idx = index::Index::open(&lookup::index_path(data, "dict")).unwrap();
+        let names: std::collections::HashSet<String> = (0..idx.n as u32)
+            .map(|i| idx.doc(i).name.to_string())
+            .collect();
+        assert_eq!(names.len(), idx.n);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn upgrade_takes_the_folder_after_any_flag() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            upgrade_dest(&a(&["upgrade", ".", "--no-migrate", "/wf"])),
+            Some("/wf")
+        );
+        assert_eq!(
+            upgrade_dest(&a(&["upgrade", ".", "/wf", "--no-migrate"])),
+            Some("/wf")
+        );
+        assert_eq!(upgrade_dest(&a(&["upgrade", ".", "--no-migrate"])), None);
+        assert_eq!(upgrade_dest(&a(&["upgrade", "."])), None);
+    }
+
+    #[test]
+    fn entry_names_differ_for_colliding_title_counts() {
+        assert_ne!(entry_name("X1", 0), entry_name("X", 10));
+        assert_eq!(entry_name("X", 3), entry_name("X", 3));
+    }
+
+    #[test]
+    fn reindex_from_pack_reproduces_the_import_names() {
+        let dir = tmp_dir("reindex");
+        let data = dir.to_str().unwrap();
+        let words = vec![
+            ("X1".to_string(), vec![defn("X1", 1)]),
+            ("X".to_string(), (0..11).map(|_| defn("X", 1)).collect()),
+        ];
+        pack_and_index(data, "dict", words).unwrap();
+        let names = |data: &str| -> Vec<String> {
+            let idx = index::Index::open(&lookup::index_path(data, "dict")).unwrap();
+            (0..idx.n as u32)
+                .map(|i| idx.doc(i).name.to_string())
+                .collect()
+        };
+        let before = names(data);
+        assert_eq!(reindex_from_pack(data, "dict").unwrap(), 12);
+        assert_eq!(names(data), before);
+        assert_pack_matches_index(data, "dict");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_build_leaves_no_temp_files() {
+        let dir = tmp_dir("failbuild");
+        let data = dir.to_str().unwrap();
+        // a non-empty directory where the final index goes makes the last rename fail
+        std::fs::create_dir_all(format!("{data}/dict/index.bin/x")).unwrap();
+        assert!(pack_and_index(data, "dict", words_set("w", 5)).is_err());
+        for f in ["defs.pack.tmp", "index.bin.new", "index.bin.new.tmp"] {
+            assert!(!dir.join("dict").join(f).exists(), "{f} was left behind");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

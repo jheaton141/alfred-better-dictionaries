@@ -13,7 +13,9 @@ const REFERER: &str = "https://ipa-reader.com/";
 const HOST: &str = "polly.us-west-2.amazonaws.com";
 
 fn hmac(key: &[u8], msg: &str) -> Vec<u8> {
-    let mut m = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    // HMAC accepts keys of any length, so new_from_slice cannot fail.
+    let mut m = Hmac::<Sha256>::new_from_slice(key)
+        .unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
     m.update(msg.as_bytes());
     m.finalize().into_bytes().to_vec()
 }
@@ -122,11 +124,25 @@ fn curl_json(target: &str, body: &Value) -> Result<Value> {
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
+/// Run `player` on the audio file, then delete the file unless the user asked to keep it with `--out`.
+fn play_then_clean(
+    path: &str,
+    user_out: bool,
+    player: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    let r = player(path);
+    if !user_out {
+        let _ = std::fs::remove_file(path);
+    }
+    r
+}
+
 pub fn say_ipa(ipa: &str, voice: &str, out: Option<&str>, play: bool) -> Result<()> {
     let tmp_out = std::env::temp_dir()
         .join(format!("bd-ipa-{}.mp3", std::process::id()))
         .to_string_lossy()
         .into_owned();
+    let user_out = out.is_some();
     let out = out.unwrap_or(&tmp_out);
     let id = curl_json("GetId", &json!({"IdentityPoolId": POOL_ID}))?;
     let id = id["IdentityId"].as_str().context("no IdentityId")?;
@@ -166,9 +182,12 @@ pub fn say_ipa(ipa: &str, voice: &str, out: Option<&str>, play: bool) -> Result<
         bail!("downloading audio failed");
     }
     if play {
-        let r = Command::new("afplay").arg(out).status().context("afplay");
+        play_then_clean(out, user_out, |p| {
+            Command::new("afplay").arg(p).status().context("afplay")?;
+            Ok(())
+        })?;
+    } else if !user_out {
         let _ = std::fs::remove_file(out);
-        r?;
     }
     Ok(())
 }
@@ -196,6 +215,32 @@ mod tests {
     fn time_format() {
         assert_eq!(amz_time(1440892800).1, "20150830T000000Z");
         assert_eq!(amz_time(1709210096).1, "20240229T123456Z");
+    }
+
+    fn scratch(name: &str) -> String {
+        let p = format!(
+            "{}/bd-say-{}-{name}.mp3",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        std::fs::write(&p, b"audio").unwrap();
+        p
+    }
+
+    #[test]
+    fn user_out_file_survives_playback() {
+        let p = scratch("keep");
+        play_then_clean(&p, true, |_| Ok(())).unwrap();
+        assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn temp_file_is_removed_even_when_playback_fails() {
+        let p = scratch("tmp");
+        let r = play_then_clean(&p, false, |_| bail!("no player"));
+        assert!(r.is_err());
+        assert!(!std::path::Path::new(&p).exists());
     }
 
     #[test]

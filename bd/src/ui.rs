@@ -4,7 +4,19 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
+/// True if a `BD_QUIET` value asks for no banners (set and not empty or "0").
+fn quiet_value(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 pub fn notify(data_dir: &str, title: &str, message: &str) {
+    let _ = std::fs::write(
+        format!("{data_dir}/progress.txt"),
+        format!("{title}: {message}\n"),
+    );
+    if quiet_value(std::env::var("BD_QUIET").ok().as_deref()) {
+        return;
+    }
     let clean = |s: &str| {
         s.replace(['"', '\\'], "'")
             .chars()
@@ -23,10 +35,6 @@ pub fn notify(data_dir: &str, title: &str, message: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    let _ = std::fs::write(
-        format!("{data_dir}/progress.txt"),
-        format!("{title}: {message}\n"),
-    );
 }
 
 pub struct Progress {
@@ -83,5 +91,19 @@ pub fn log_line(data_dir: &str, line: &str) {
         .open(format!("{data_dir}/import.log"))
     {
         let _ = writeln!(f, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quiet_value;
+
+    #[test]
+    fn quiet_env_values() {
+        assert!(!quiet_value(None));
+        assert!(!quiet_value(Some("")));
+        assert!(!quiet_value(Some("0")));
+        assert!(quiet_value(Some("1")));
+        assert!(quiet_value(Some("yes")));
     }
 }
