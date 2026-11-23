@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
+import os
+import sys
 import time
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, DEVNULL
 
 from multiprocess import Process, Queue
 
@@ -9,6 +11,41 @@ import alfred
 
 WORKFLOW_DIR = alfred.get_workflow_dir()
 CD_PATH = f"{WORKFLOW_DIR}/cocoaDialog.app/Contents/MacOS/cocoaDialog"
+
+
+def _launch_cocoadialog(cmd):
+    """Start the progress window. The bundled cocoaDialog is an Intel-only
+    binary, so on an Apple Silicon Mac without Rosetta it cannot launch.
+    Return None instead of crashing the whole import in that case."""
+    try:
+        proc = Popen(cmd, stdin=PIPE, stdout=DEVNULL, encoding="utf-8")
+    except OSError as e:
+        print(f"progress window unavailable ({e}); using notifications",
+              file=sys.stderr)
+        return None
+    time.sleep(0.2)
+    if proc.poll() is not None:  # died immediately
+        return None
+    return proc
+
+
+def _notify(title, message):
+    """Fallback progress reporting: a macOS notification plus a status file."""
+    msg = message.replace('"', "'")[:120]
+    ttl = title.replace('"', "'")
+    try:
+        Popen(
+            ["osascript", "-e",
+             f'display notification "{msg}" with title "BetterDict" '
+             f'subtitle "{ttl}"'],
+            stdout=DEVNULL, stderr=DEVNULL,
+        )
+    except OSError:
+        pass
+    data_dir = os.environ.get("alfred_workflow_data")
+    if data_dir and os.path.isdir(data_dir):
+        with open(f"{data_dir}/progress.txt", "w") as f:
+            f.write(f"{time.ctime()}  {ttl}: {message}\n")
 
 
 class ProgressBar:
@@ -24,9 +61,13 @@ class ProgressBar:
             "--percent",
             str(percent),
         ]
-        self.proc = Popen(cmd, stdin=PIPE, encoding="utf-8")
+        self.title = title
+        self.proc = _launch_cocoadialog(cmd)
         self.message = message
         self.start_time = time.time()
+        self.last_notified_decile = -1
+        if self.proc is None:
+            _notify(title, "started")
 
     def update(self, percent, message):
         elapsed_seconds = time.time() - self.start_time
@@ -35,11 +76,21 @@ class ProgressBar:
         rs = int(estimated_remaining_seconds) % 60
         rm = int(estimated_remaining_seconds) // 60
         eta_n_message = f"[ETA {rm:02d}:{rs:02d}] {message}"
-        self.proc.stdin.write(f"{int(percent)} {eta_n_message}\n")
-        self.proc.stdin.flush()
+        if self.proc is None:
+            decile = int(percent) // 10
+            if decile > self.last_notified_decile:
+                self.last_notified_decile = decile
+                _notify(self.title, f"{int(percent)}%  {eta_n_message}")
+            return
+        try:
+            self.proc.stdin.write(f"{int(percent)} {eta_n_message}\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            self.proc = None  # window was closed; carry on silently
 
     def finish(self):
-        self.proc.kill()
+        if self.proc is not None:
+            self.proc.kill()
 
 
 class IndefiniteProgressBar:
@@ -54,20 +105,26 @@ class IndefiniteProgressBar:
             message,
             "--indeterminate",
         ]
-        self.proc = Popen(cmd, stdin=PIPE, encoding="utf-8")
+        self.proc = _launch_cocoadialog(cmd)
         self.message = message
         self.start_time = time.time()
 
     def update(self, message):
+        if self.proc is None:
+            return
         elapsed_seconds = time.time() - self.start_time
         es = int(elapsed_seconds) % 60
         em = int(elapsed_seconds) // 60
         time_n_message = f"[Elapsed {em:02d}:{es:02d}] {message}"
-        self.proc.stdin.write(f"0 {time_n_message}\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(f"0 {time_n_message}\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            self.proc = None
 
     def finish(self):
-        self.proc.kill()
+        if self.proc is not None:
+            self.proc.kill()
 
 
 class NoOpAcc:
