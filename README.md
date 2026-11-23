@@ -86,7 +86,9 @@ thesaurus in the background (a few seconds) and searches them together as
 one. Nothing to choose or import. Each result is tagged with the book it
 came from, and `⌘↩` plays the pronunciation.
 
-To search only one kind of book, start the query with a prefix:
+To search only one kind of book, type `lookup` first, then a prefix before
+the word. The prefix works only after `lookup`; typing `dict:` or `t:` on its
+own in Alfred does not start a search.
 
 | Type | Searches |
 |---|---|
