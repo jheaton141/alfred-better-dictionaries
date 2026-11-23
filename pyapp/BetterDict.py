@@ -136,7 +136,9 @@ class AccumulatedIndexer:
         ipb.finish()
 
 
-def build_index(word_defs_map_items, dict_id, db_path, html_dir, placement):
+def build_index(
+    word_defs_map_items, dict_id, db_path, html_dir, placement, wait=False
+):
     index = create_index(dict_id, db_path)
     title = "Building index for instant search..."
 
@@ -155,6 +157,7 @@ def build_index(word_defs_map_items, dict_id, db_path, html_dir, placement):
         msgfunc=lambda word_n_defs: word_n_defs[0],
         accumulator=AccumulatedIndexer(index),
         title=title,
+        wait=wait,
     )
 
 
@@ -368,6 +371,7 @@ def start_search_server(db_path):
             f"{SEARCH_IP}:{SEARCH_PORT}",
             "--http-payload-size-limit",
             "1000000000",
+            "--no-analytics",
         ]
         Popen(cmd, stdout=logfile, stderr=logfile)
 
@@ -447,6 +451,101 @@ def list_unimported_dicts(import_base_dir) -> list[alfred.Item]:
     return alfreditems
 
 
+def read_legacy_html_dir(html_dir):
+    """word -> [definitions] from the old one-HTML-file-per-definition layout.
+
+    Files are visited in name order so that, within a word, definitions keep
+    the order they were imported in (filenames are base16(word + n)).
+    """
+    word_to_defs_map = defaultdict(list)
+    for name in sorted(os.listdir(html_dir)):
+        if not name.endswith(".html"):
+            continue
+        with open(f"{html_dir}/{name}", "rb") as f:
+            text = f.read().decode("utf-8")
+        m = re.search(r"<body>(.*)</body>", text, re.S)
+        if m is None:
+            continue
+        defn = m.group(1).strip()
+        title = re.search('d:title="(.*?)"', defn)
+        if title is not None:
+            word_to_defs_map[title.group(1)].append(defn)
+    return word_to_defs_map
+
+
+def kill_search_server(import_base_dir):
+    call(["pkill", "-f", "alfred-dict-server"], stdout=DEVNULL)
+    while is_search_server_up():
+        time.sleep(0.2)
+    pidfile = f"{import_base_dir}/server.pid"
+    if os.path.exists(pidfile):
+        os.remove(pidfile)
+
+
+def migrate_all(import_base_dir, keep_backup):
+    """Convert every imported dictionary from the old layout (one HTML file
+    per definition, big index) to the pack + slim index layout, WITHOUT
+    re-reading the macOS dictionary files.
+
+    The new index goes into a fresh database ('db.new'): LMDB never gives
+    freed space back to the filesystem, so deleting and recreating indexes
+    inside the old 'db' would not make anything smaller. Nothing old is
+    deleted until every dictionary has been rebuilt; if anything fails, the
+    old data is untouched and migrate can simply be run again.
+    """
+    imported_json_path = f"{import_base_dir}/imported.json"
+    if not os.path.exists(imported_json_path):
+        print("Nothing imported; nothing to migrate.")
+        return
+    with open(imported_json_path) as f:
+        dict_ids = [i["arg"] for i in json.load(f)["items"]]
+
+    todo = [
+        d
+        for d in dict_ids
+        if os.path.isdir(f"{import_base_dir}/{d}/html")
+    ]
+    if not todo:
+        print("All dictionaries already use the new layout.")
+        return
+    print(f"Migrating: {', '.join(todo)}")
+
+    db_path = f"{import_base_dir}/db"
+    new_db_path = f"{import_base_dir}/db.new"
+
+    kill_search_server(import_base_dir)
+    shutil.rmtree(new_db_path, ignore_errors=True)
+    start_search_server(new_db_path)
+
+    for dict_id in todo:
+        print(f"[{dict_id}] reading old HTML files...")
+        word_defs_map = read_legacy_html_dir(
+            f"{import_base_dir}/{dict_id}/html"
+        )
+        items = word_defs_map.items()
+        cache_dir = f"{import_base_dir}/cache/{dict_id}"
+        os.makedirs(cache_dir, exist_ok=True)
+        pack_path = f"{import_base_dir}/{dict_id}/defs.pack"
+        print(f"[{dict_id}] packing {len(word_defs_map)} words...")
+        placement = write_pack(items, pack_path)
+        print(f"[{dict_id}] building index...")
+        build_index(items, dict_id, new_db_path, cache_dir, placement, wait=True)
+
+    # Everything rebuilt: swap databases, then reclaim the old data.
+    kill_search_server(import_base_dir)
+    old_db_path = f"{import_base_dir}/db.premigrate"
+    shutil.rmtree(old_db_path, ignore_errors=True)
+    os.rename(db_path, old_db_path)
+    os.rename(new_db_path, db_path)
+    if os.path.exists(f"{new_db_path}.log"):
+        os.replace(f"{new_db_path}.log", f"{db_path}.log")
+    if not keep_backup:
+        shutil.rmtree(old_db_path, ignore_errors=True)
+        for dict_id in todo:
+            shutil.rmtree(f"{import_base_dir}/{dict_id}/html")
+    print("Migration complete.")
+
+
 @click.group()
 def main():
     pass
@@ -477,6 +576,23 @@ def list_unimported(workflow_data_dir: str):
 )
 def import_(dict_path: str, workflow_data_dir: str):
     import_dict(dict_path, workflow_data_dir)
+
+
+@main.command()
+@click.option(
+    "--keep-backup",
+    is_flag=True,
+    help="Keep the old database and HTML files (needs extra disk space "
+    "until you delete them yourself).",
+)
+@click.argument(
+    "workflow_data_dir",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    envvar="alfred_workflow_data",
+    default=DEFAULT_WORKFLOW_DATA_DIR,
+)
+def migrate(workflow_data_dir: str, keep_backup: bool):
+    migrate_all(workflow_data_dir, keep_backup)
 
 
 @main.command()

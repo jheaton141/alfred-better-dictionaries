@@ -9,7 +9,12 @@ filter in its info.plist, so every imported dictionary, keyword, hotkey and
 search index stays exactly as it is. No re-import needed.
 
 Usage (quit Alfred Preferences first; Alfred itself can stay running):
-    python3 upgrade_in_place.py [path/to/installed/workflow/folder]
+    python3 upgrade_in_place.py [--migrate [--keep-backup]] [workflow folder]
+
+--migrate additionally converts already-imported dictionaries to the new,
+much smaller storage layout (no re-import from the macOS dictionary files
+needed). Search is unavailable while it runs; the old data is deleted only
+after every dictionary has been rebuilt (--keep-backup keeps it).
 """
 
 import glob
@@ -85,7 +90,10 @@ def patch_plist(path, new_version):
 
 
 def main():
-    dest = sys.argv[1] if len(sys.argv) > 1 else find_installed()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    migrate = "--migrate" in sys.argv
+    keep_backup = "--keep-backup" in sys.argv
+    dest = args[0] if args else find_installed()
     if not dest or not os.path.exists(f"{dest}/info.plist"):
         sys.exit("Couldn't find the installed workflow; pass its folder "
                  "(Alfred > Workflows > right-click > Open in Finder).")
@@ -105,6 +113,20 @@ def main():
     shutil.copytree(f"{HERE}/pyapp", f"{dest}/pyapp", dirs_exist_ok=True)
     subprocess.call(["pkill", "-f", "alfred-dict-server"])  # restart w/ new flags
     print("Done. Existing dictionaries, keywords and hotkeys are untouched.")
+
+    if migrate:
+        data = os.path.expanduser(
+            f"~/Library/Application Support/Alfred/Workflow Data/{BUNDLE_ID}"
+        )
+        py = f"{data}/.venv/bin/python"
+        if not os.path.exists(py):
+            sys.exit("No BetterDict Python environment yet; open Alfred and "
+                     "run `lookup` once, then re-run with --migrate.")
+        cmd = [py, "pyapp/BetterDict.py", "migrate", data]
+        if keep_backup:
+            cmd.insert(3, "--keep-backup")
+        print("Migrating imported dictionaries (this can take a while)...")
+        sys.exit(subprocess.call(cmd, cwd=dest))
 
 
 if __name__ == "__main__":

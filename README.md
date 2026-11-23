@@ -99,3 +99,14 @@ Re-importing a newer `.alfredworkflow` over an installed one loses the
 per-dictionary keywords/hotkeys. To upgrade in place instead, quit Alfred
 Preferences and run `python3 upgrade_in_place.py` from a checkout of this
 repo. Your imported dictionaries, keywords, hotkeys and indexes are kept.
+
+Add `--migrate` to also convert dictionaries imported with an older version
+to the compact storage layout, without re-importing from the macOS
+dictionary files:
+
+    python3 upgrade_in_place.py --migrate
+
+Search is unavailable while it runs. The new index is built next to the old
+one and the old data is only deleted once every dictionary has been rebuilt
+(pass `--keep-backup` to keep it; you need free disk space for the new data
+while it runs).

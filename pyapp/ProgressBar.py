@@ -79,7 +79,7 @@ class NoOpAcc:
 
 
 def run_parallely_with_progress_bar(
-    items, func, msgfunc, accumulator=NoOpAcc(), title=""
+    items, func, msgfunc, accumulator=NoOpAcc(), title="", wait=False
 ):
     PROC_COUNT = 5
 
@@ -113,6 +113,9 @@ def run_parallely_with_progress_bar(
     updater.start()
     for item in items:
         task_queue.put(item)
+
+    if wait:
+        updater.join()
 
 
 def _run_parallely_with_progress_bar(items, func, msgfunc, title):
