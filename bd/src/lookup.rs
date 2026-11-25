@@ -75,6 +75,8 @@ fn materialize(data_dir: &str, id: &str, d: &DocView, html: &[u8]) -> Result<Str
     Ok(path)
 }
 
+const TEXT_VIEW_SUBTITLE: &str = "View as selectable text";
+
 fn item_json(sel: &Sel, data_dir: &str, id: &str, d: &DocView, label: Option<&str>) -> Value {
     let Ok(html) = read_definition(data_dir, id, d) else {
         return json!({"title": d.title, "subtitle": "Definition unavailable (try again)", "valid": false});
@@ -88,10 +90,27 @@ fn item_json(sel: &Sel, data_dir: &str, id: &str, d: &DocView, label: Option<&st
     };
     let mut item =
         json!({"title": d.title, "subtitle": subtitle, "arg": path, "quicklookurl": path});
+    let mut mods = json!({"alt": {"subtitle": TEXT_VIEW_SUBTITLE}});
     if !pron.is_empty() {
-        item["mods"] = json!({"cmd": {"arg": pron, "subtitle": format!("🗣 {pron}")}});
+        mods["cmd"] = json!({"arg": pron, "subtitle": format!("🗣 {pron}")});
     }
+    item["mods"] = mods;
     item
+}
+
+/// `bd text-view <page.html>`: the plain text of a cached definition page.
+pub fn text_view(data_dir: &str, page: &str) -> Result<String> {
+    let cache = Path::new(data_dir).join("cache").canonicalize();
+    let page = Path::new(page).canonicalize();
+    let (Ok(cache), Ok(page)) = (cache, page) else {
+        return Ok("This definition is no longer cached: run the lookup again.".into());
+    };
+    if !page.starts_with(&cache) || page.extension().is_none_or(|e| e != "html") {
+        anyhow::bail!("{} is not a cached definition", page.display());
+    }
+    Ok(item::plain_text(&String::from_utf8_lossy(&std::fs::read(
+        &page,
+    )?)))
 }
 
 fn message(title: &str, subtitle: &str) -> Value {
@@ -588,6 +607,51 @@ mod cache_tests {
         });
         b.finish(&index_path(dir, id)).unwrap();
         Index::open(&index_path(dir, id)).unwrap()
+    }
+
+    #[test]
+    fn every_result_offers_the_text_view_on_option() {
+        let dir = temp();
+        let ix = one_doc(
+            &dir,
+            "d1",
+            Some(br#"<d:entry d:title="word">hello</d:entry>"#),
+        );
+        let v = item_json(&Sel::new(), &dir, "d1", &ix.doc(0), None);
+        assert_eq!(v["mods"]["alt"]["subtitle"], TEXT_VIEW_SUBTITLE);
+        assert!(
+            v["mods"]["alt"].get("arg").is_none(),
+            "keeps the page path as its arg"
+        );
+        let ipa =
+            r#"<d:entry d:title="word"><span d:prn="IPA" class="ph t_IPA">wɜrd</span></d:entry>"#
+                .as_bytes();
+        let ix = one_doc(&dir, "d2", Some(ipa));
+        let v = item_json(&Sel::new(), &dir, "d2", &ix.doc(0), None);
+        assert_eq!(v["mods"]["alt"]["subtitle"], TEXT_VIEW_SUBTITLE);
+        assert_eq!(v["mods"]["cmd"]["arg"], "wɜrd");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn text_view_reads_cached_pages_only() {
+        let dir = temp();
+        let ix = one_doc(&dir, "d1", Some(br#"<d:entry d:title="word"><span class="hg">word</span><span class="se2">one</span></d:entry>"#));
+        let v = item_json(&Sel::new(), &dir, "d1", &ix.doc(0), None);
+        let page = v["arg"].as_str().unwrap();
+        assert_eq!(text_view(&dir, page).unwrap(), "word\none\n");
+        let outside = format!("{dir}/outside.html");
+        std::fs::write(&outside, "secret").unwrap();
+        assert!(text_view(&dir, &outside).is_err());
+        assert!(text_view(&dir, &format!("{dir}/cache/d1/../../outside.html")).is_err());
+        let notes = format!("{dir}/cache/d1/notes.txt");
+        std::fs::write(&notes, "text").unwrap();
+        assert!(text_view(&dir, &notes).is_err());
+        let gone = cache_path(&dir, "d1", "n9.html");
+        assert!(text_view(&dir, &gone)
+            .unwrap()
+            .contains("run the lookup again"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

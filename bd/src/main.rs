@@ -367,6 +367,9 @@ fn create_workflow_objects(wf_dir: &str, name: &str, id: &str) -> Result<()> {
     wf.connect(&junction, &sf, 0, None)?;
     wf.connect(&sf, &ipa, CMD, None)?;
     wf.connect(&sf, &opener, 0, None)?;
+    if let Some(text) = wf.uid_with_label("Show definition as text") {
+        wf.connect(&sf, &text, graph::ALT, None)?;
+    }
     wf.connect(&router, &junction, 0, Some(&router_out))?;
 
     let off = 180 * (rows as i64 - 1);
@@ -690,6 +693,12 @@ fn run() -> Result<()> {
             lookup::prune_cache(&data);
             Ok(())
         }
+        "text-view" => {
+            let page = args.get(1).context("usage: bd text-view <cached page.html>")?;
+            let data = args.get(2).cloned().map_or_else(|| default_data_dir(&wf_dir), Ok)?;
+            print!("{}", lookup::text_view(&data, page)?);
+            Ok(())
+        }
         "factory-reset" => cmd_factory_reset(&data_arg(1)?),
         "package" => {
             pkg::package(args.get(1).context("usage: bd package <repo> <out_dir>")?, args.get(2).context("usage: bd package <repo> <out_dir>")?)
@@ -717,7 +726,7 @@ fn run() -> Result<()> {
             println!("bd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => bail!("usage: bd <import|search|lookup|setup|list-unimported|migrate|factory-reset|package|upgrade|say-ipa|version> ..."),
+        _ => bail!("usage: bd <import|search|lookup|setup|list-unimported|migrate|text-view|factory-reset|package|upgrade|say-ipa|version> ..."),
     }
 }
 
@@ -815,6 +824,36 @@ mod tests {
             }
             assert_pack_matches_index(&data, "dict");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_dictionary_search_gets_option_return_for_the_text_view() {
+        let dir = tmp_dir("textview-wiring");
+        let wf = dir.to_str().unwrap();
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../info.plist"),
+            format!("{wf}/info.plist"),
+        )
+        .unwrap();
+        create_workflow_objects(wf, "Extra", "extra-dict").unwrap();
+        let v = plist::Value::from_file(format!("{wf}/info.plist")).unwrap();
+        let conns = v.as_dictionary().unwrap()["connections"]
+            .as_dictionary()
+            .unwrap();
+        let to_text = |c: &plist::Value| {
+            let c = c.as_dictionary().unwrap();
+            c["destinationuid"].as_string() == Some("5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3")
+                && c["modifiers"].as_signed_integer() == Some(graph::ALT)
+        };
+        let wired = conns
+            .values()
+            .filter(|l| l.as_array().unwrap().iter().any(to_text))
+            .count();
+        assert_eq!(
+            wired, 3,
+            "the lookup search, the template search and the new one"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

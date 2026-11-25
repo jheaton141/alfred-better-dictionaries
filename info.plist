@@ -43,6 +43,16 @@
 				<key>vitoclose</key>
 				<false/>
 			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3</string>
+				<key>modifiers</key>
+				<integer>524288</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
 		</array>
 		<key>20D38440-F936-46C0-B86E-DBD7028AFDB7</key>
 		<array>
@@ -75,6 +85,19 @@
 			<dict>
 				<key>destinationuid</key>
 				<string>F7170828-96FA-4241-A50B-974496E7A1FC</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>B2E8C4A6-1D93-4F57-A0B8-6C3E9F1A7D52</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
@@ -124,6 +147,8 @@
 				<false/>
 			</dict>
 		</array>
+		<key>B2E8C4A6-1D93-4F57-A0B8-6C3E9F1A7D52</key>
+		<array/>
 		<key>C6850BD6-BCFE-456F-AF77-59A4F8F5D50A</key>
 		<array>
 			<dict>
@@ -154,6 +179,16 @@
 				<string>07542750-62D5-4658-B992-090595513ACF</string>
 				<key>modifiers</key>
 				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3</string>
+				<key>modifiers</key>
+				<integer>524288</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
@@ -436,6 +471,62 @@
 			<string>07542750-62D5-4658-B992-090595513ACF</string>
 			<key>version</key>
 			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>102</integer>
+				<key>script</key>
+				<string>./bd text-view "$1"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>behaviour</key>
+				<integer>0</integer>
+				<key>fontmode</key>
+				<integer>0</integer>
+				<key>fontsizing</key>
+				<integer>0</integer>
+				<key>footertext</key>
+				<string></string>
+				<key>inputfile</key>
+				<string></string>
+				<key>inputtype</key>
+				<integer>0</integer>
+				<key>loadingtext</key>
+				<string></string>
+				<key>outputmode</key>
+				<integer>0</integer>
+				<key>scriptinput</key>
+				<integer>0</integer>
+				<key>spellchecking</key>
+				<integer>0</integer>
+				<key>stackview</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.userinterface.text</string>
+			<key>uid</key>
+			<string>B2E8C4A6-1D93-4F57-A0B8-6C3E9F1A7D52</string>
+			<key>version</key>
+			<integer>1</integer>
 		</dict>
 		<dict>
 			<key>config</key>
@@ -799,6 +890,15 @@ Subsequent searches should be snappy
 			<key>ypos</key>
 			<real>15.0</real>
 		</dict>
+		<key>5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3</key>
+		<dict>
+			<key>note</key>
+			<string>Show definition as text</string>
+			<key>xpos</key>
+			<real>1265.0</real>
+			<key>ypos</key>
+			<real>375.0</real>
+		</dict>
 		<key>5F2298EA-894F-4017-BD87-6120B0E7FFF6</key>
 		<dict>
 			<key>xpos</key>
@@ -844,6 +944,15 @@ Subsequent searches should be snappy
 			<real>30.0</real>
 			<key>ypos</key>
 			<real>280.0</real>
+		</dict>
+		<key>B2E8C4A6-1D93-4F57-A0B8-6C3E9F1A7D52</key>
+		<dict>
+			<key>note</key>
+			<string>Definition text</string>
+			<key>xpos</key>
+			<real>1440.0</real>
+			<key>ypos</key>
+			<real>375.0</real>
 		</dict>
 		<key>C6850BD6-BCFE-456F-AF77-59A4F8F5D50A</key>
 		<dict>
@@ -896,7 +1005,7 @@ Subsequent searches should be snappy
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.8.3</string>
+	<string>0.9.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/mr-pennyworth/alfred-better-dictionaries</string>
 </dict>

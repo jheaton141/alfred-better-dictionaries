@@ -12,6 +12,7 @@ Better search and live previews for built-in macOS dictionaries.
 ### Features
  - IPA (phonetic) pronunciations:
    Press `⌘↩` to hear the pronunciation.
+ - Selectable text: press `⌥↩` to open the entry in Alfred's Text View, where you can select and copy any of it.
  - In-Alfred live previews with colors that
    automatically adapt to Alfred's theme:
    ![](images/auto-theme.png)
@@ -33,7 +34,7 @@ Better search and live previews for built-in macOS dictionaries.
 
 ### Rebuilt in Rust
 This fork replaces the original Python + Meilisearch backend with `bd`, a
-single native Rust binary (v0.8.3, source in `bd/`). The workflow's look and
+single native Rust binary (v0.9.0, source in `bd/`). The workflow's look and
 features are unchanged; what changed is everything underneath.
 
 Measured head-to-head against the original
@@ -84,7 +85,7 @@ Import the workflow and type `lookup` followed by a word. The first time,
 the workflow sets itself up: it imports macOS's built-in dictionary and
 thesaurus in the background (a few seconds) and searches them together as
 one. Nothing to choose or import. Each result is tagged with the book it
-came from, and `⌘↩` plays the pronunciation.
+came from, `⌘↩` plays the pronunciation and `⌥↩` opens the entry as selectable text.
 
 To search only one kind of book, type `lookup` first, then a prefix before
 the word. The prefix works only after `lookup`; typing `dict:` or `t:` on its

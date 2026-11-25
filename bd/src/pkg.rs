@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 use plist::{Dictionary, Value};
 use std::path::Path;
 
+use crate::graph;
+
 /// Files that make up the workflow (besides `bd` itself).
 pub const FILES: &[&str] = &[
     "AlfredExtraPane.app",
@@ -197,6 +199,71 @@ fn find_installed() -> Option<String> {
     None
 }
 
+/// The script that prints an entry's text, and the Text View that shows it.
+const TEXT_VIEW_OBJECTS: [&str; 2] = [
+    "5D7A3F10-2B4E-4C8A-9E61-7A1C0B94D2E3",
+    "B2E8C4A6-1D93-4F57-A0B8-6C3E9F1A7D52",
+];
+
+/// Give an installed workflow the Text View objects, and wire Option-Return from
+/// every search that already has a Command-Return pronunciation action.
+fn add_text_view(wf: &mut Value, new: &Value) -> Result<()> {
+    let [action, _] = TEXT_VIEW_OBJECTS;
+    let root = dict(wf)?;
+    let find = |r: &Dictionary, uid: &str| {
+        r.get("objects").and_then(Value::as_array).and_then(|a| {
+            a.iter()
+                .find(|o| uid_of(o).as_deref() == Some(uid))
+                .cloned()
+        })
+    };
+    let Some(new_root) = new.as_dictionary().filter(|n| find(n, action).is_some()) else {
+        return Ok(());
+    };
+    for uid in TEXT_VIEW_OBJECTS {
+        let Some(obj) = find(new_root, uid).filter(|_| find(root, uid).is_none()) else {
+            continue;
+        };
+        if let Some(Value::Array(objs)) = root.get_mut("objects") {
+            objs.push(obj);
+        }
+        for key in ["uidata", "connections"] {
+            let from = new_root.get(key).and_then(Value::as_dictionary);
+            if let (Some(v), Some(Value::Dictionary(to))) =
+                (from.and_then(|f| f.get(uid)), root.get_mut(key))
+            {
+                to.insert(uid.into(), v.clone());
+            }
+        }
+    }
+    let is_mod = |c: &Value, m: i64| {
+        c.as_dictionary()
+            .and_then(|c| c.get("modifiers"))
+            .and_then(Value::as_signed_integer)
+            == Some(m)
+    };
+    if let Some(Value::Dictionary(conns)) = root.get_mut("connections") {
+        for (src, list) in conns.iter_mut() {
+            let Value::Array(list) = list else { continue };
+            let wired = list.iter().any(|c| {
+                c.as_dictionary()
+                    .and_then(|c| c.get("destinationuid"))
+                    .and_then(Value::as_string)
+                    == Some(action)
+            });
+            if src != action && !wired && list.iter().any(|c| is_mod(c, graph::CMD)) {
+                let mut c = Dictionary::new();
+                c.insert("destinationuid".into(), Value::String(action.into()));
+                c.insert("modifiers".into(), Value::Integer(graph::ALT.into()));
+                c.insert("modifiersubtext".into(), Value::String(String::new()));
+                c.insert("vitoclose".into(), Value::Boolean(false));
+                list.push(Value::Dictionary(c));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Make an installed workflow's own plist use the new scripts, leaving every
 /// dictionary, keyword and hotkey it holds untouched.
 fn patch_plist(path: &str, new: &Value) -> Result<()> {
@@ -238,6 +305,7 @@ fn patch_plist(path: &str, new: &Value) -> Result<()> {
             }
         }
     }
+    add_text_view(&mut wf, new)?;
     if let Some(v) = new.as_dictionary().and_then(|d| d.get("version")) {
         dict(&mut wf)?.insert("version".into(), v.clone());
     }
@@ -301,7 +369,103 @@ pub fn upgrade(
 
 #[cfg(test)]
 mod tests {
-    use super::pref_roots;
+    use super::{add_text_view, patch_plist, pref_roots, uid_of, TEXT_VIEW_OBJECTS};
+    use plist::Value;
+
+    fn plist(xml: &str) -> Value {
+        let doc = format!("<?xml version=\"1.0\"?><plist version=\"1.0\">{xml}</plist>");
+        Value::from_reader_xml(doc.as_bytes()).unwrap()
+    }
+
+    fn conn(dst: &str, modifiers: i64) -> String {
+        format!("<dict><key>destinationuid</key><string>{dst}</string><key>modifiers</key><integer>{modifiers}</integer></dict>")
+    }
+
+    #[test]
+    fn upgrade_adds_the_text_view_once_and_wires_every_search() {
+        let [action, view] = TEXT_VIEW_OBJECTS;
+        let obj = |uid: &str| format!("<dict><key>uid</key><string>{uid}</string></dict>");
+        let old = plist(&format!(
+            "<dict><key>objects</key><array>{}{}{}</array><key>uidata</key><dict/><key>connections</key><dict><key>S1</key><array>{}{}</array><key>S2</key><array>{}{}</array><key>S3</key><array>{}</array></dict></dict>",
+            obj("S1"), obj("S2"), obj("S3"),
+            conn("IPA", 1048576), conn("OPEN", 0),
+            conn("IPA", 1048576), conn("OPEN", 0),
+            conn("OPEN", 0)
+        ));
+        let new = plist(&format!(
+            "<dict><key>objects</key><array>{}{}</array><key>uidata</key><dict><key>{action}</key><dict><key>note</key><string>Show definition as text</string></dict><key>{view}</key><dict/></dict><key>connections</key><dict><key>{action}</key><array>{}</array><key>{view}</key><array/></dict></dict>",
+            obj(action), obj(view), conn(view, 0)
+        ));
+        let mut wf = old.clone();
+        add_text_view(&mut wf, &new).unwrap();
+        add_text_view(&mut wf, &new).unwrap();
+        let root = wf.as_dictionary().unwrap();
+        assert_eq!(root["objects"].as_array().unwrap().len(), 5);
+        let uidata = root["uidata"].as_dictionary().unwrap();
+        assert!(uidata.contains_key(action) && uidata.contains_key(view));
+        let conns = root["connections"].as_dictionary().unwrap();
+        let alt_to_action = |src: &str| {
+            conns[src]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| {
+                    let c = c.as_dictionary().unwrap();
+                    c["destinationuid"].as_string() == Some(action)
+                        && c["modifiers"].as_signed_integer() == Some(524288)
+                })
+                .count()
+        };
+        assert_eq!(
+            (
+                alt_to_action("S1"),
+                alt_to_action("S2"),
+                alt_to_action("S3")
+            ),
+            (1, 1, 0)
+        );
+        assert_eq!(conns[action].as_array().unwrap().len(), 1);
+        // the Text View alone was deleted: it comes back, the action is not duplicated
+        let mut cut = wf.clone();
+        if let Value::Array(o) = cut.as_dictionary_mut().unwrap().get_mut("objects").unwrap() {
+            o.retain(|o| uid_of(o).as_deref() != Some(view));
+        }
+        add_text_view(&mut cut, &new).unwrap();
+        assert_eq!(
+            cut.as_dictionary().unwrap()["objects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        // a plist whose release lacks the objects is left alone
+        let mut bare = old.clone();
+        add_text_view(&mut bare, &old).unwrap();
+        assert_eq!(bare, old);
+    }
+
+    #[test]
+    fn patching_an_installed_plist_adds_the_text_view() {
+        let [action, view] = TEXT_VIEW_OBJECTS;
+        let obj = |uid: &str| format!("<dict><key>uid</key><string>{uid}</string></dict>");
+        let old = plist("<dict><key>objects</key><array/><key>uidata</key><dict/><key>connections</key><dict/></dict>");
+        let new = plist(&format!(
+            "<dict><key>objects</key><array>{}{}</array><key>uidata</key><dict/><key>connections</key><dict/><key>version</key><string>9</string></dict>",
+            obj(action), obj(view)
+        ));
+        let path = std::env::temp_dir().join(format!("bd-patch-{}.plist", uuid::Uuid::new_v4()));
+        old.to_file_xml(&path).unwrap();
+        patch_plist(path.to_str().unwrap(), &new).unwrap();
+        let got = Value::from_file(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            got.as_dictionary().unwrap()["objects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
 
     #[test]
     fn synced_folder_is_searched_before_the_default() {

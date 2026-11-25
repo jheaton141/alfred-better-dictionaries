@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use plist::{Dictionary, Value};
 
 pub const CMD: i64 = 1048576;
+pub const ALT: i64 = 524288;
 
 pub struct Graph {
     path: String,
